@@ -40,6 +40,50 @@ def parse_timestamped(text: str) -> list[RawLine]:
     return lines
 
 
+_SRT_TIMES = re.compile(
+    r"(\d+):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d+):(\d{2}):(\d{2})[,.](\d{1,3})"
+)
+
+
+def _hms(hours: str, minutes: str, seconds: str, millis: str) -> float:
+    return int(hours) * 3600 + int(minutes) * 60 + int(seconds) + _fraction(millis)
+
+
+def parse_srt(text: str) -> list[RawLine]:
+    rows = text.splitlines()
+    cues: list[RawLine] = []
+    i = 0
+    while i < len(rows):
+        if not rows[i].strip():
+            i += 1
+            continue
+        block_start = i + 1  # 1-based line number of the block's first line
+        block: list[str] = []
+        while i < len(rows) and rows[i].strip():
+            block.append(rows[i])
+            i += 1
+        offset = 1 if block[0].strip().isdigit() else 0
+        time_line = block_start + offset
+        match = _SRT_TIMES.search(block[offset]) if offset < len(block) else None
+        if match is None:
+            raise ScriptParseError(
+                "expected an SRT time line 'HH:MM:SS,mmm --> HH:MM:SS,mmm'", time_line
+            )
+        body = " ".join(row.strip() for row in block[offset + 1 :] if row.strip())
+        if not body:
+            raise ScriptParseError("SRT cue has no text", time_line)
+        cues.append(
+            RawLine(
+                number=len(cues) + 1,
+                start=_hms(*match.group(1, 2, 3, 4)),
+                text=body,
+                srt_end=_hms(*match.group(5, 6, 7, 8)),
+                source_line=time_line,
+            )
+        )
+    return cues
+
+
 def _check_increasing(lines: list[RawLine]) -> None:
     for previous, current in zip(lines, lines[1:]):
         if current.start <= previous.start:
@@ -51,7 +95,7 @@ def _check_increasing(lines: list[RawLine]) -> None:
 
 def parse_script(text: str) -> list[RawLine]:
     text = text.lstrip("﻿")
-    lines = parse_timestamped(text)
+    lines = parse_srt(text) if "-->" in text else parse_timestamped(text)
     if not lines:
         raise ScriptParseError("the script contains no lines")
     _check_increasing(lines)
