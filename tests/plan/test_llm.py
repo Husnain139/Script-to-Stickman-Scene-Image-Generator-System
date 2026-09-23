@@ -127,3 +127,15 @@ def test_every_attempt_is_logged(fake_chat, stage_runner, tmp_path):
     assert entries[0]["errors"] == ["the reply contains no JSON object"]
     assert entries[1]["neurons"] == 1.5
     assert all(e["kind"] == "llm" and e["model"] == LLM.planner_model for e in entries)
+
+
+def test_a_cloudflare_error_is_logged_with_its_prompt(fake_chat, stage_runner, tmp_path):
+    log_path = tmp_path / "run.jsonl"
+    chat = fake_chat([CFError(ErrorCategory.DAILY_LIMIT, "daily free allocation")])
+    with pytest.raises(CFError):
+        run(stage_runner(chat, log_path=log_path), request())
+    entries = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert len(entries) == 1
+    assert entries[0]["ok"] is False
+    assert entries[0]["error"] == "daily_limit"
+    assert entries[0]["prompt"] == "USER"

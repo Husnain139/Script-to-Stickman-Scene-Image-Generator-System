@@ -158,6 +158,7 @@ class StageRunner:
                 error=str(exc.category),
                 status=exc.status,
                 message=shorten(exc.message),
+                prompt=shorten(request.user),
                 latency_s=round(time.perf_counter() - started, 2),
             )
             raise
