@@ -93,9 +93,9 @@ One-time setup:
 | `split.split_words` | `20` | …or at or above this word count |
 | `split.min_part_seconds` | `2.5` | Each part must be at least this long |
 | `split.max_parts` | `2` | v1 accepts only `2`. Other values are rejected when config loads. |
-| `llm.planner_model` | `@cf/openai/gpt-oss-120b` | **[M0]** exact ID |
+| `llm.planner_model` | `@cf/openai/gpt-oss-120b` | **[M0]** settled: ID confirmed, works on `/ai/v1/chat/completions` (§15 #5). See `docs/m0-findings.md`. |
 | `llm.fallback_model` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Always called with JSON mode |
-| `llm.vision_model` | `@cf/qwen/qwen3.8-27b` | **[M0]** exact ID |
+| `llm.vision_model` | `@cf/qwen/qwen3.8-27b` | **[M0]** settled: ID confirmed, 2 images per call (§15 #6). See `docs/m0-findings.md`. |
 | `llm.batch_size` | `8` | Units per describe batch |
 | `llm.temperature` | `0.4` | |
 | `image.model` | `@cf/black-forest-labs/flux-2-klein-9b` | Changed after M5 |
@@ -708,7 +708,7 @@ JSON: {model, messages:[{role:system,…},{role:user,…}], temperature, max_tok
 | Category | How it's detected | What the tool does |
 |---|---|---|
 | `rate_limited` | HTTP 429 (not the daily limit) | Waits using `Retry-After`, or 1, 2, 4… s up to 60 s with some randomness. Up to `rate_limit_max` tries. |
-| `daily_limit` | Only when `account.plan: free`: the daily-neuron-limit error **[M0]** | Stops the run: no new requests, lets in-flight requests finish, saves state, prints the resume message |
+| `daily_limit` | Only when `account.plan: free`: the daily-neuron-limit error (**[M0]** settled: HTTP 429, code 4006, message contains "daily free allocation"; §15 #7) | Stops the run: no new requests, lets in-flight requests finish, saves state, prints the resume message |
 | `auth` | 401 or 403 | Stops the whole run at once |
 | `bad_request` | Other 4xx | No retry. The unit becomes `failed` with the API message. It doesn't count toward the circuit breaker. |
 | `refused` | Content-policy error **[M0]** | Treated as `safety_filtered` in QC (§7.5). Doesn't count toward the circuit breaker. |

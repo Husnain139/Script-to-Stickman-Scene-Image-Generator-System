@@ -20,7 +20,7 @@ class ErrorCategory(StrEnum):
 # probe's own fixture recorder truncates long messages at 60 chars, which cuts
 # off the real Cloudflare message ("...you have used up your daily free
 # allocation of 10,000 neurons...", code 4006) mid-word before "allocation".
-DAILY_LIMIT_MARKERS: tuple[str, ...] = ("daily free", "daily free allocation", "daily limit")
+DAILY_LIMIT_MARKERS: tuple[str, ...] = ("daily free", "daily limit")
 REFUSAL_MARKERS: tuple[str, ...] = ("nsfw", "content policy", "safety", "flagged")
 
 

@@ -36,8 +36,8 @@ fixture recorder truncates long error messages at 60 characters
 `"...your daily free allocatio...<205 chars>"`, one letter short of the
 `"daily free allocation"` string that `DAILY_LIMIT_MARKERS` checked for. This is an
 artifact of the M0 probe's own recording, not of Cloudflare (the live response is not
-truncated). Fix applied: added the shorter, still-specific substring `"daily free"` to
-`DAILY_LIMIT_MARKERS` in `src/stickman/cf/errors.py`, which matches both the truncated
+truncated). Fix applied: in `DAILY_LIMIT_MARKERS` (`src/stickman/cf/errors.py`), replaced
+`"daily free allocation"` with the shorter substring `"daily free"`. It is still specific, and it matches both the truncated
 fixture and the real untruncated message. The recorded body (truncated form) was also
 added as two new parametrized cases in `tests/cf/test_errors.py`
 (`plan="free"` → DAILY_LIMIT, `plan="paid"` → RATE_LIMITED). All 7 tests in
@@ -73,7 +73,8 @@ Per 4-minute video (≈90 generations) at 1920×1088 with ~2–3 reference image
 - **Klein 9B** ≈ $0.0185/image → ≈ $1.67 for images + ≈ $0.15 vision/LLM ≈ **$1.8/video ≈
   $12.7/week** (≈ $12 net of the free 10,000 neurons/day) — **inside the $15/week
   budget**.
-- **Klein 4B** ≈ $0.0025/image → ≈ **$0.4/video ≈ $2.8/week**.
+- **Klein 4B** ≈ $0.0025/image → ≈ $0.23 for images + ≈ $0.15 vision/LLM ≈ **$0.4/video ≈
+  $2.7/week**.
 - **FLUX.2 dev**: unusable synchronously (see row 9) — not a viable default.
 
 Both figures **require Workers Paid** (usage-based billing enabled) — the free plan

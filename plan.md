@@ -95,7 +95,7 @@ M1 and M2 can run alongside M0's style test. M5 is a deliberate stop: the rest o
 
 | Default image model | Per image | Images per video (90) | + LLM, QC, new extras' sheets | **Per week (7 videos)** |
 |---|---|---|---|---|
-| FLUX.2 [klein] 4B | about $0.0025 | about $0.4 | about $0.15 | **about $2.8** |
+| FLUX.2 [klein] 4B | about $0.0025 | about $0.23 | about $0.15 | **about $2.7** |
 | FLUX.2 [klein] 9B | about $0.0185 | about $1.67 | about $0.15 | **about $12.7** (about $12 net of the free 10,000 neurons/day) |
 | FLUX.2 [dev] | — | — | — | **Unusable: HTTP 408 timeouts** at both 1920×1080/25 steps and 1024×768/20 steps (~237 s). Not a viable default; dropped from `bootstrap.model` and the M5 `compare` model list. |
 
@@ -103,7 +103,7 @@ Both figures **require Workers Paid** (usage-based billing) — the account's fr
 
 **Workers Paid plan fee:** **USER ACTION pending** — check the dashboard (spec §15 #11). It is not counted in the budget.
 
-**Klein 9B now fits inside the $15/week budget** (about $12.7, or about $12 net of the free daily allocation) — the M0 measurement is well below the earlier estimate. Klein 4B is comfortably inside it, at about $2.8/week. See `docs/m0-findings.md` for the full per-call evidence.
+**Klein 9B now fits inside the $15/week budget** (about $12.7, or about $12 net of the free daily allocation) — the M0 measurement is well below the earlier estimate. Klein 4B is comfortably inside it, at about $2.7/week. See `docs/m0-findings.md` for the full per-call evidence.
 
 ## 5. Risks and mitigations
 
