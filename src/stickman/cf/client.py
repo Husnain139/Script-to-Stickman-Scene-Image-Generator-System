@@ -75,7 +75,12 @@ class CloudflareClient:
         if response_format is not None:
             body["response_format"] = response_format
         response = await self._post(f"{self._account_url}/ai/v1/chat/completions", json=body)
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise CFError(
+                ErrorCategory.BAD_REQUEST, f"chat response is not JSON: {response.text[:300]}"
+            ) from exc
         if isinstance(data, dict) and "choices" not in data and isinstance(data.get("result"), dict):
             data = data["result"]
         try:
@@ -84,7 +89,9 @@ class CloudflareClient:
             raise CFError(
                 ErrorCategory.BAD_REQUEST, f"unexpected chat response shape: {str(data)[:300]}"
             ) from exc
-        usage = data.get("usage") or {}
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            usage = {}
         return LLMResult(
             text=text,
             input_tokens=usage.get("prompt_tokens"),
@@ -127,9 +134,13 @@ class CloudflareClient:
     async def _post(self, url: str, **kwargs: Any) -> httpx.Response:
         try:
             response = await self._http.post(url, **kwargs)
+        except (httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+            raise CFError(
+                ErrorCategory.TRANSIENT, f"timeout: {exc!r}", possibly_billed=False
+            ) from exc
         except httpx.TimeoutException as exc:
             raise CFError(ErrorCategory.TRANSIENT, f"timeout: {exc!r}", possibly_billed=True) from exc
-        except httpx.TransportError as exc:
+        except httpx.RequestError as exc:
             raise CFError(ErrorCategory.TRANSIENT, f"network error: {exc!r}") from exc
         if response.status_code >= 400:
             raise CFError(

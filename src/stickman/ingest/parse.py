@@ -34,9 +34,12 @@ def parse_timestamped(text: str) -> list[RawLine]:
         minutes_i, seconds_i = int(minutes), int(seconds)
         if seconds_i >= 60 or (hours is not None and minutes_i >= 60):
             raise ScriptParseError("minutes and seconds must be below 60", source_line)
+        body_text = body.strip()
+        if not body_text:
+            raise ScriptParseError("timestamp has no text", source_line)
         start = int(hours or 0) * 3600 + minutes_i * 60 + seconds_i + _fraction(fraction)
         lines.append(
-            RawLine(number=len(lines) + 1, start=start, text=body.strip(), source_line=source_line)
+            RawLine(number=len(lines) + 1, start=start, text=body_text, source_line=source_line)
         )
     return lines
 
@@ -95,8 +98,8 @@ def _check_increasing(lines: list[RawLine]) -> None:
 
 
 def parse_script(text: str) -> list[RawLine]:
-    text = text.lstrip("﻿")
-    lines = parse_srt(text) if "-->" in text else parse_timestamped(text)
+    text = text.lstrip("\ufeff")
+    lines = parse_srt(text) if _SRT_TIMES.search(text) else parse_timestamped(text)
     if not lines:
         raise ScriptParseError("the script contains no lines")
     _check_increasing(lines)

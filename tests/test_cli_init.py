@@ -92,3 +92,12 @@ def test_init_skip_token_check(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "build_client", lambda cfg: pytest.fail("must not call the API"))
     result = runner.invoke(cli.app, ["init", "-w", str(tmp_path), "--skip-token-check"])
     assert result.exit_code == 0
+
+
+def test_init_error_with_markup_like_text_does_not_crash(tmp_path, monkeypatch):
+    write_env(tmp_path)
+    fake = FakeClient(CFError(ErrorCategory.TRANSIENT, "boom [/x] boom"))
+    monkeypatch.setattr(cli, "build_client", lambda cfg: fake)
+    result = runner.invoke(cli.app, ["init", "-w", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "boom" in result.output

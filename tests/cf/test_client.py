@@ -175,3 +175,35 @@ def test_network_error_is_transient_not_billed():
         generate(handler)
     assert info.value.category is ErrorCategory.TRANSIENT
     assert info.value.possibly_billed is False
+
+
+def test_chat_non_json_body_is_bad_request():
+    with pytest.raises(CFError) as info:
+        chat(lambda request: httpx.Response(200, text="not json"))
+    assert info.value.category is ErrorCategory.BAD_REQUEST
+
+
+def test_chat_usage_not_a_dict_yields_none_tokens():
+    body = {"choices": [{"message": {"content": "OK"}}], "usage": "lots"}
+    result = chat(lambda request: httpx.Response(200, json=body))
+    assert (result.input_tokens, result.output_tokens) == (None, None)
+
+
+def test_decoding_error_is_transient():
+    def handler(request):
+        raise httpx.DecodingError("bad", request=request)
+
+    with pytest.raises(CFError) as info:
+        generate(handler)
+    assert info.value.category is ErrorCategory.TRANSIENT
+    assert info.value.possibly_billed is False
+
+
+def test_connect_timeout_is_transient_not_billed():
+    def handler(request):
+        raise httpx.ConnectTimeout("no conn", request=request)
+
+    with pytest.raises(CFError) as info:
+        generate(handler)
+    assert info.value.category is ErrorCategory.TRANSIENT
+    assert info.value.possibly_billed is False

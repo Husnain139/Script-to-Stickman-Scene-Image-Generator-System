@@ -173,6 +173,7 @@ class Settings(_Section):
 class Secrets(BaseSettings):
     """CF_ACCOUNT_ID and CF_API_TOKEN from the environment or .env."""
 
+    # Exception to extra="forbid": env/.env contain unrelated variables (PATH, etc.).
     model_config = SettingsConfigDict(extra="ignore")
 
     cf_account_id: str

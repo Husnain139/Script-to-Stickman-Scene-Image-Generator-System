@@ -47,6 +47,8 @@ def classify(status: int, body: str, *, plan: str) -> ErrorCategory:
         return ErrorCategory.AUTH
     if status == 429:
         return ErrorCategory.RATE_LIMITED
+    if status == 408:
+        return ErrorCategory.TRANSIENT
     if status >= 500:
         return ErrorCategory.TRANSIENT
     if 400 <= status < 500:

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from stickman.cf.client import CloudflareClient
 from stickman.cf.errors import CFError, ErrorCategory
@@ -62,7 +63,7 @@ def init(
     try:
         cfg = load_config(root)
     except ConfigError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(EXIT_CONFIG_ERROR)
     if shutil.which("ffmpeg") is None:
         console.print(
@@ -110,5 +111,5 @@ async def _verify_token(cfg: AppConfig) -> None:
                 "Workers AI - Read and Workers AI - Edit, then update CF_API_TOKEN in .env.[/red]"
             )
             raise typer.Exit(EXIT_CONFIG_ERROR)
-        console.print(f"[red]Token check failed: {exc}[/red]")
+        console.print(f"[red]Token check failed: {escape(str(exc))}[/red]")
         raise typer.Exit(EXIT_USER_ERROR)

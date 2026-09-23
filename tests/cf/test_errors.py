@@ -19,6 +19,7 @@ DAILY = "You have used up your daily free allocation of 10,000 neurons, please u
         (400, "width must be at most 1920", "paid", ErrorCategory.BAD_REQUEST),
         (400, "Input was flagged as NSFW", "paid", ErrorCategory.REFUSED),
         (422, "Blocked by content policy", "paid", ErrorCategory.REFUSED),
+        (408, "request timeout", "paid", ErrorCategory.TRANSIENT),
     ],
 )
 def test_classify(status, body, plan, expected):

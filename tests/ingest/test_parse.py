@@ -21,7 +21,7 @@ def test_parses_h_mm_ss_fractions_and_separators():
 
 
 def test_blank_lines_ignored_and_bom_stripped():
-    lines = parse_script("﻿0:00: A.\n\n\n0:01: B.\n")
+    lines = parse_script("\ufeff0:00: A.\n\n\n0:01: B.\n")
     assert triples(lines) == [(1, 0.0, "A."), (2, 1.0, "B.")]
     assert lines[1].source_line == 4
 
@@ -47,6 +47,17 @@ def test_decreasing_timestamp_rejected():
 def test_empty_script_rejected():
     with pytest.raises(ScriptParseError, match="no lines"):
         parse_script("\n\n")
+
+
+def test_timestamp_with_no_text_rejected():
+    with pytest.raises(ScriptParseError) as info:
+        parse_script("0:00: A.\n0:05  \n")
+    assert info.value.line_number == 2
+
+
+def test_srt_detection_by_time_line_not_substring():
+    lines = parse_script("0:00: Go --> now.\n0:02: Next.\n")
+    assert triples(lines) == [(1, 0.0, "Go --> now."), (2, 2.0, "Next.")]
 
 
 @pytest.mark.parametrize("line", ["1:75:00: Too many minutes.", "0:75: Too many seconds."])
