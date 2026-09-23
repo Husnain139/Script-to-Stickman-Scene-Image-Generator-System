@@ -100,3 +100,18 @@ def parse_script(text: str) -> list[RawLine]:
         raise ScriptParseError("the script contains no lines")
     _check_increasing(lines)
     return lines
+
+
+def parse_duration(value: str) -> float:
+    """Parse --duration: M:SS, H:MM:SS or plain seconds."""
+    parts = value.strip().split(":")
+    try:
+        numbers = [float(part) for part in parts]
+    except ValueError:
+        raise ValueError(f"invalid duration {value!r}; use M:SS, H:MM:SS or seconds") from None
+    if len(numbers) > 3 or any(n < 0 for n in numbers):
+        raise ValueError(f"invalid duration {value!r}; use M:SS, H:MM:SS or seconds")
+    total = 0.0
+    for number in numbers:
+        total = total * 60 + number
+    return total
