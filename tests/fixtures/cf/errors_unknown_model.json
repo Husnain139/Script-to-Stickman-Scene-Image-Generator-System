@@ -1,0 +1,25 @@
+{
+  "status": 400,
+  "elapsed_s": 0.16,
+  "headers": {
+    "date": "Wed, 23 Sep 2026 09:08:48 GMT",
+    "content-type": "application/json",
+    "content-length": "104",
+    "connection": "keep-alive",
+    "api-version": "2026-09-25.epoch",
+    "cf-auditlog-id": "01a0cd86-55b2-787b-8a46-16d453e17d7d",
+    "server": "cloudflare",
+    "cf-ray": "a3f86829184ff8d3-SIN"
+  },
+  "body": {
+    "success": false,
+    "errors": [
+      {
+        "code": 7000,
+        "message": "No route for that URI"
+      }
+    ],
+    "messages": [],
+    "result": null
+  }
+}

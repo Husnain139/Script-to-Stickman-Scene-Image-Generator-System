@@ -1,0 +1,51 @@
+{
+  "status": 200,
+  "elapsed_s": 1.75,
+  "headers": {
+    "date": "Wed, 23 Sep 2026 08:55:12 GMT",
+    "content-type": "application/json",
+    "transfer-encoding": "chunked",
+    "connection": "keep-alive",
+    "api-version": "2026-09-25.epoch",
+    "cf-ai-neurons": "8.48",
+    "cf-auditlog-id": "01a0cd79-db4c-7d33-a97e-08be3341a550",
+    "content-encoding": "gzip",
+    "server": "cloudflare",
+    "cf-ray": "a3f854320efdd56b-KHI"
+  },
+  "body": {
+    "id": "id-1790153712019",
+    "object": "chat.completion",
+    "created": 1790153712,
+    "model": "@cf/openai/gpt-oss-120b",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "annotations": null,
+          "audio": null,
+          "content": "{\n  \"animal\": \"dog\",\n  \"legs\": 4\n}",
+          "function_call": null,
+          "reasoning": "We need to respond with JSON only. The instruction: \"Give on...<248 chars>",
+          "reasoning_content": "We need to respond with JSON only. The instruction: \"Give on...<248 chars>",
+          "refusal": null,
+          "role": "assistant"
+        },
+        "routed_experts": null,
+        "stop_reason": null,
+        "token_ids": null
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 80,
+      "completion_tokens": 87,
+      "total_tokens": 167,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "neurons": 8.477256774902344
+    }
+  }
+}

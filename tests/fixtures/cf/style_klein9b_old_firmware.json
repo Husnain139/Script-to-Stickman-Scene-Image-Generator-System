@@ -1,0 +1,25 @@
+{
+  "status": 200,
+  "elapsed_s": 3.47,
+  "headers": {
+    "date": "Wed, 23 Sep 2026 10:18:06 GMT",
+    "content-type": "application/json",
+    "transfer-encoding": "chunked",
+    "connection": "keep-alive",
+    "cf-auditlog-id": "01a0cdc5-baa4-7da3-a18e-e9344a7eeab7",
+    "api-version": "2026-09-25.epoch",
+    "cf-ai-neurons": "1544.03",
+    "cf-ai-req-id": "0b3a26d2-c527-4fdf-a542-d09491fd4334",
+    "content-encoding": "gzip",
+    "server": "cloudflare",
+    "cf-ray": "a3f8cd975db64b55-KHI"
+  },
+  "body": {
+    "result": {
+      "image": "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEB...<216228 chars>"
+    },
+    "success": true,
+    "errors": [],
+    "messages": []
+  }
+}

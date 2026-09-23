@@ -80,7 +80,7 @@ class ImageSettings(_Section):
     steps: int = Field(25, ge=1)
     use_references: bool = True
     sizes: dict[Aspect, tuple[int, int]] = Field(
-        default_factory=lambda: {"16:9": (1920, 1080), "9:16": (1080, 1920)}
+        default_factory=lambda: {"16:9": (1920, 1088), "9:16": (1088, 1920)}
     )
     sheet_size: tuple[int, int] = (768, 1024)
     anchor_size: tuple[int, int] = (1024, 768)
@@ -127,7 +127,7 @@ class TrialSettings(_Section):
 
 class BootstrapSettings(_Section):
     anchor_candidates: int = Field(4, ge=1)
-    model: str = "@cf/black-forest-labs/flux-2-dev"
+    model: str = "@cf/black-forest-labs/flux-2-klein-9b"
 
 
 class ExportSettings(_Section):

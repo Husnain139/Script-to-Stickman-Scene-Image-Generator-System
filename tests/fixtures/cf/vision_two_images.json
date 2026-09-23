@@ -1,0 +1,50 @@
+{
+  "status": 200,
+  "elapsed_s": 6.67,
+  "headers": {
+    "date": "Wed, 23 Sep 2026 09:08:21 GMT",
+    "content-type": "application/json",
+    "transfer-encoding": "chunked",
+    "connection": "keep-alive",
+    "cf-auditlog-id": "01a0cd85-d385-78ee-a0cc-962c9f71956a",
+    "api-version": "2026-09-25.epoch",
+    "cf-ai-neurons": "107.18",
+    "content-encoding": "gzip",
+    "server": "cloudflare",
+    "cf-ray": "a3f867589e134906-KHI"
+  },
+  "body": {
+    "id": "id-1790154501448",
+    "object": "chat.completion",
+    "created": 1790154501,
+    "model": "@cf/qwen/qwen3.8-27b",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "annotations": null,
+          "audio": null,
+          "content": "\n\n```json\n{\"counts\": [1, 1], \"has_text\": [false, false]}\n```",
+          "function_call": null,
+          "reasoning": "The user wants a JSON output with two arrays: \"counts\" (numb...<869 chars>",
+          "refusal": null,
+          "role": "assistant"
+        },
+        "routed_experts": null,
+        "stop_reason": null,
+        "token_ids": null
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 828,
+      "completion_tokens": 252,
+      "total_tokens": 1080,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "neurons": 107.18181610107422
+    }
+  }
+}

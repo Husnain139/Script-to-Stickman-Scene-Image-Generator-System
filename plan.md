@@ -74,7 +74,7 @@ Build in this order: resolve the riskiest unknowns first, and keep the no-API co
 | **M2** | Planning | LLM pass 1 and pass 2, Pydantic schemas, retry and fallback to Llama, prompt builder, `plan.yaml` read/write (ruamel), `replan` | `stickman new sample.txt` writes a valid `plan.yaml`. Hand edits survive the tool rewriting the file. **The planning checklist report (spec §17) is saved:** expected corrections found (target 4 of 5), no wrong corrections, the merge done, the mascot rule followed. |
 | **M3** | Image generation | FLUX.2 client (multipart, reference images), reference-slot filling, parallel runs, `state.json` safe writes, ledger, budget checks, error categories, the 5-failures pause, resume, run summary | Kill the process mid-batch, then `resume` finishes with no duplicate or lost images. Budget stop and `--force` work. |
 | **M4** | Quality control | Pixel checks, vision check, `safety_filtered` detection, prompt fixes per failure reason, `needs_review` | Unit tests pass on fixture images: text, colour, filled background, black, blurred, clean |
-| **M5** | Bootstrap and model comparison **(decision point)** | `bootstrap` (anchor candidates, then mascot sheet), `compare` (6 scenes × 3 models × with and without references), a comparison report | **You choose:** the default model, the QC thresholds, the timeout and the budget. The choices are written to config. |
+| **M5** | Bootstrap and model comparison **(decision point)** | `bootstrap` (anchor candidates, then mascot sheet, on Klein 9B — see M0 note below), `compare` (6 scenes × 2 models — Klein 4B and Klein 9B; FLUX.2 dev excluded, unusable: 408 timeouts — with and without references), a comparison report | **You choose:** the default model, the QC thresholds, the timeout and the budget. The choices are written to config. |
 | **M6** | Review page | FastAPI server, plan view with live reload and validation errors, sheet and test approval, gallery, hash-checked prompt edits, keyboard shortcuts, history, side-by-side view | The whole review flow works in the browser for the sample project |
 | **M7** | End-to-end workflow | Extras' sheets and library reuse, test-first-then-batch, test-scene picking, stale detection, `regen`, `rebuild-prompt`, `--no-review`, the project-selection rule (`-p` required when several projects are recent) | A real 4-minute script goes from plan to fully approved gallery |
 | **M8** | Export | Manifests, MP4 (frame-accurate, optional zoom), SRT (both text modes), numbered images, blocking on unapproved scenes | The MP4 imports into CapCut and every cut lands within one frame of its timestamp |
@@ -84,26 +84,26 @@ M1 and M2 can run alongside M0's style test. M5 is a deliberate stop: the rest o
 
 ### Estimated one-off costs
 - M0 style test: about $0.50
-- M5 bootstrap (4 anchor candidates and a mascot sheet on FLUX.2 dev): about $1
-- M5 comparison test (36 images, mostly FLUX.2 dev cost): about $2.50–3
+- M5 bootstrap (4 anchor candidates and a mascot sheet on Klein 9B — FLUX.2 dev is unusable: 408 timeouts, see §4): about $0.10
+- M5 comparison test (24 images, Klein 4B + Klein 9B only — dev excluded, see §4): about $0.25
 
-**Correction:** during brainstorming I said the comparison would cost about $1. With references and FLUX.2 dev pricing, $2.50–3 is the realistic figure.
+**Correction:** during brainstorming I said the comparison would cost about $1, then revised it to $2.50–3 assuming FLUX.2 dev pricing. **M0 update:** dev is unusable synchronously and is dropped from `compare` (spec §14.4), so the real cost with just Klein 4B and 9B is far lower — about $0.25 for 24 images (see `docs/m0-findings.md`).
 
-## 4. Running costs (estimates, to be checked in M5)
+## 4. Running costs (measured in M0; to be re-checked in M5)
 
-**Basis:** a 4-minute video is 72 units. With 25% retries that is **about 90 generations per video**. Per-image prices use the spec's cautious formulas (spec §9.6) at 1920×1080 with 2–3 reference images. Retries are counted **once**, in the 90.
+**Basis:** a 4-minute video is 72 units. With 25% retries that is **about 90 generations per video**. Per-image prices are **measured** from the `cf-ai-neurons` response header (spec §9.6/§9.7), not estimated, at 1920×1088 with 2–3 reference images. Retries are counted **once**, in the 90.
 
 | Default image model | Per image | Images per video (90) | + LLM, QC, new extras' sheets | **Per week (7 videos)** |
 |---|---|---|---|---|
-| FLUX.2 [klein] 4B | about $0.0036 | about $0.32 | about $0.23 | **about $3.90** |
-| FLUX.2 [klein] 9B | about $0.024 | about $2.16 | about $0.23 | **about $16.70** |
-| FLUX.2 [dev] | about $0.14 | about $12.50 | about $0.23 | **about $89** |
+| FLUX.2 [klein] 4B | about $0.0025 | about $0.23 | about $0.15 | **about $2.7** |
+| FLUX.2 [klein] 9B | about $0.0185 | about $1.67 | about $0.15 | **about $12.7** (about $12 net of the free 10,000 neurons/day) |
+| FLUX.2 [dev] | — | — | — | **Unusable: HTTP 408 timeouts** at both 1920×1080/25 steps and 1024×768/20 steps (~237 s). Not a viable default; dropped from `bootstrap.model` and the M5 `compare` model list. |
 
-Other costs per video: LLM planning (gpt-oss-120b) about $0.06, vision QC about $0.09, extras' sheets about $0.08. The sheets cost shrinks as the character library grows.
+Both figures **require Workers Paid** (usage-based billing) — the account's free plan stops at 10,000 neurons/day, about 6 Klein 9B images, which is what M0's `style`/`anchor-leak` probe hit.
 
-**Workers Paid plan fee:** believed to be $5/month; please check. It is not counted in the budget.
+**Workers Paid plan fee:** **USER ACTION pending** — check the dashboard (spec §15 #11). It is not counted in the budget.
 
-**$15/week will probably be exceeded on Klein 9B, by about $1.70 a week.** The budget stop would trigger around the 6th or 7th video. Either raise the budget to about $20 after M5, or choose Klein 4B if its quality is enough. FLUX.2 dev is only realistic for one-off sheets.
+**Klein 9B now fits inside the $15/week budget** (about $12.7, or about $12 net of the free daily allocation) — the M0 measurement is well below the earlier estimate. Klein 4B is comfortably inside it, at about $2.7/week. See `docs/m0-findings.md` for the full per-call evidence.
 
 ## 5. Risks and mitigations
 

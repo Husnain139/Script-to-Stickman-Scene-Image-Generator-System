@@ -93,18 +93,18 @@ One-time setup:
 | `split.split_words` | `20` | …or at or above this word count |
 | `split.min_part_seconds` | `2.5` | Each part must be at least this long |
 | `split.max_parts` | `2` | v1 accepts only `2`. Other values are rejected when config loads. |
-| `llm.planner_model` | `@cf/openai/gpt-oss-120b` | **[M0]** exact ID |
+| `llm.planner_model` | `@cf/openai/gpt-oss-120b` | **[M0]** settled: ID confirmed, works on `/ai/v1/chat/completions` (§15 #5). See `docs/m0-findings.md`. |
 | `llm.fallback_model` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Always called with JSON mode |
-| `llm.vision_model` | `@cf/qwen/qwen3.8-27b` | **[M0]** exact ID |
+| `llm.vision_model` | `@cf/qwen/qwen3.8-27b` | **[M0]** settled: ID confirmed, 2 images per call (§15 #6). See `docs/m0-findings.md`. |
 | `llm.batch_size` | `8` | Units per describe batch |
 | `llm.temperature` | `0.4` | |
 | `image.model` | `@cf/black-forest-labs/flux-2-klein-9b` | Changed after M5 |
 | `image.steps` | `25` | Sent only to models that accept it (FLUX.2 dev). Klein models use a fixed number of steps. |
 | `image.use_references` | `true` | |
-| `image.sizes` | `{"16:9": [1920,1080], "9:16": [1080,1920]}` | **[M0]** whether 1080 is accepted (§15) |
+| `image.sizes` | `{"16:9": [1920,1088], "9:16": [1088,1920]}` | **[M0]** settled: `1080` is silently rounded down to `1072`; `1088` is exact. Export centre-crops to 1920×1080 / 1080×1920 (§14.2). See `docs/m0-findings.md`. |
 | `image.sheet_size` | `[768,1024]` | Single character. Groups use `[1024,768]`. |
 | `image.anchor_size` | `[1024,768]` | |
-| `image.ref_max_side` | `512` | **[M0]** whether the limit is ≤512 or <512 |
+| `image.ref_max_side` | `512` | **[M0]** settled: 512 and 513 both accepted; hard max is 4 reference images (a 5th → HTTP 400); max width 2048. See `docs/m0-findings.md`. |
 | `render.concurrency` | `4` | |
 | `render.timeout_s` | `120` | Replaced by a measured value after M5 |
 | `render.est_seconds_per_image` | `10` | Used for time estimates until M5 measures real speeds |
@@ -119,7 +119,7 @@ One-time setup:
 | `qc.min_idea_score` | `3` | `matches_visual_idea` below this counts as a fail |
 | `test.count` | `3` | |
 | `bootstrap.anchor_candidates` | `4` | |
-| `bootstrap.model` | `@cf/black-forest-labs/flux-2-dev` | |
+| `bootstrap.model` | `@cf/black-forest-labs/flux-2-klein-9b` | **[M0]** changed from `flux-2-dev`: dev is unusable synchronously (HTTP 408 timeouts at usable sizes/step counts). Klein 9B used as the bootstrap fallback (user-approved). See `docs/m0-findings.md`. |
 | `export.fps` | `30` | |
 | `export.zoom` | `false` | |
 | `export.zoom_max` | `1.06` | End scale for the slow zoom |
@@ -370,7 +370,7 @@ figures: 3
 description: "…exact wording, reused word for word…"
 tags: [prehistoric, group, fire]
 style_version: 1
-model: "@cf/black-forest-labs/flux-2-dev"
+model: "@cf/black-forest-labs/flux-2-klein-9b"
 seed: 771203
 sheet: sheet.png
 ref: ref.png
@@ -684,9 +684,9 @@ Content-Type: multipart/form-data
 fields: prompt, width, height, seed, [steps — dev only], [guidance — optional],
         input_image_0 … input_image_3   (binary PNG, each ≤ ref_max_side)
 ```
-- **Response:** JSON containing a base64 image. **[M0]** confirm where it sits (expected `result.image`) and the image format.
+- **Response:** JSON containing a base64 image. **[M0]** Settled: it sits at `result.image`, and the format is JPEG. See `docs/m0-findings.md`.
 - **Saving:** detect the format from the magic bytes and always save as PNG. Write to a temp file, then `os.replace`.
-- **Seeds:** when `seed` is null, the seed is a random 32-bit integer, stored with the version.
+- **Seeds:** when `seed` is null, the seed is a random 32-bit integer, stored with the version. **[M0]** The same seed does **not** reproduce identical pixels on Klein 4B. The seed is kept as a record of how an image was made, not as a way to recreate it. Nothing may rely on regenerating an identical image from a stored seed. See `docs/m0-findings.md`.
 
 ### 9.3 LLM
 ```
@@ -694,20 +694,21 @@ POST https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/chat/compl
 JSON: {model, messages:[{role:system,…},{role:user,…}], temperature, max_tokens,
        [response_format: {type:"json_schema", json_schema:{name, schema}}]}
 ```
-- **[M0]** Confirm that gpt-oss-120b works on this endpoint. If not, use the native `/ai/run/{model}` format.
-- **Reading replies:** the JSON is taken from the first `{` to the last `}` of the reply content, which tolerates text before or after it. The `usage` token counts are used for the ledger. If they're missing, the count is estimated as characters ÷ 4.
+- **[M0]** Settled: gpt-oss-120b works on this endpoint, with and without `response_format: json_schema`. `content` holds the JSON as a string; a separate `reasoning`/`reasoning_content` field carries chain-of-thought and is ignored. The native `/ai/run/{model}` format wraps the same shape one level deeper, under `result`, and isn't needed. See `docs/m0-findings.md`.
+- **Reading replies:** the JSON is taken from the first `{` to the last `}` of the reply content, which tolerates text before or after it — this lenient extraction is also what `llm.vision_model` replies need (§9.4; M0 found they aren't clean JSON either). The `usage` token counts are used for the ledger. If they're missing, the count is estimated as characters ÷ 4.
 
 ### 9.4 Vision QC
 - **Request:** the same chat endpoint, with `model = llm.vision_model`. The user message holds image content parts: the unit image, plus the mascot reference in mascot units.
-- **[M0]** Confirm the exact content format and whether multiple images are accepted.
-- **Fallback when only one image is accepted:** send one composite made by the tool, with the mascot reference on the left and the unit image (scaled to 768 px tall) on the right. The prompt then says *"left = reference, right = image to check"*.
+- **[M0]** Settled: `@cf/qwen/qwen3.8-27b` accepts **2 images per call** as `image_url` content parts. See `docs/m0-findings.md`.
+- **Fallback when only one image is accepted:** not needed — 2 images per call are accepted (above). (If this ever regresses: send one composite made by the tool, with the mascot reference on the left and the unit image (scaled to 768 px tall) on the right. The prompt then says *"left = reference, right = image to check"*.)
+- **Reply parsing:** qwen's replies are **not clean JSON** — expect a leading `\n\n`, or the JSON wrapped in a ` ```json ` fence, plus a separate `reasoning` field like gpt-oss's. Extract JSON the same lenient way as §9.3 (first `{` to last `}`); a markdown fence's backticks fall outside that range, so it still works. **[M0]** See `docs/m0-findings.md`.
 
 ### 9.5 Sorting errors into categories (the `cf` module)
 
 | Category | How it's detected | What the tool does |
 |---|---|---|
 | `rate_limited` | HTTP 429 (not the daily limit) | Waits using `Retry-After`, or 1, 2, 4… s up to 60 s with some randomness. Up to `rate_limit_max` tries. |
-| `daily_limit` | Only when `account.plan: free`: the daily-neuron-limit error **[M0]** | Stops the run: no new requests, lets in-flight requests finish, saves state, prints the resume message |
+| `daily_limit` | Only when `account.plan: free`: the daily-neuron-limit error (**[M0]** settled: HTTP 429, code 4006, message contains "daily free allocation"; §15 #7) | Stops the run: no new requests, lets in-flight requests finish, saves state, prints the resume message |
 | `auth` | 401 or 403 | Stops the whole run at once |
 | `bad_request` | Other 4xx | No retry. The unit becomes `failed` with the API message. It doesn't count toward the circuit breaker. |
 | `refused` | Content-policy error **[M0]** | Treated as `safety_filtered` in QC (§7.5). Doesn't count toward the circuit breaker. |
@@ -717,8 +718,13 @@ JSON: {model, messages:[{role:system,…},{role:user,…}], temperature, max_tok
 **Circuit breaker:** when `retry.circuit_breaker` `transient` failures happen in a row (a success resets the count), the run pauses. It saves state and prints *"Possible outage — run `stickman resume` later."*
 
 ### 9.6 Cost estimates (`config/pricing.yaml`)
-- **Tiles:** `ceil(w/512) × ceil(h/512)`. This deliberately overestimates, because Cloudflare doesn't say exactly how it counts tiles.
-- **Megapixels:** `ceil(w×h / 1,000,000, 2 decimal places)`.
+These formulas are used only for **pre-call estimates** and for calls with no
+`cf-ai-neurons` response header (errors, timeouts); when the header is present the
+ledger uses it directly (§9.7).
+- **Tiles:** `w × h / 262,144` (area-based). **[M0]** replaces the earlier per-side
+  ceiling formula: measured neuron costs (e.g. Klein 4B 1920×1072 ≈ 206 neurons, Klein
+  9B 1920×1072 ≈ 1541 neurons) fit an area-based count better. See `docs/m0-findings.md`.
+- **Megapixels:** `w × h / 1,048,576` (area-based, same reasoning).
 
 ```yaml
 "@cf/black-forest-labs/flux-2-klein-4b": {kind: image, out_tile: 0.000287, in_tile: 0.000059, supports_negative_prompt: false, supports_steps: false}
@@ -735,9 +741,10 @@ free_daily_usd: 0.11      # 10,000 neurons × $0.011/1k
 - **Klein 9B:** `first_mp + max(0, ceil(mp−1))×extra_mp + Σ ceil(in_mp)×in_mp`
 - **FLUX.2 dev:** `steps × (out_tiles×out_tile_step + Σ in_tiles×in_tile_step)`
 
-**[M0/M5]** Compare the estimates against the dashboard, and adjust the formulas if they're consistently off.
+**[M5]** Re-compare the formula-based estimates against the dashboard at volume, and adjust further if they're consistently off.
 
 ### 9.7 Ledger and budget
+- **Actual cost (M0):** every 2xx response carries a `cf-ai-neurons` header (absent on errors). The ledger records the **actual** cost as `neurons × $0.011/1000` from that header when it's present; the §9.6 formulas are the fallback, used only for pre-call estimates and for calls with no header. See `docs/m0-findings.md`.
 - **Recording:** every billable call adds an entry to `ledger.jsonl` (§5.4) straight after the response arrives. Before sending, an in-memory "in flight" amount is reserved.
 - **Week:** Monday 00:00 to Sunday 23:59:59, local time.
 - **Checking the budget:** before **every** call:
@@ -971,6 +978,7 @@ Exit codes: `0` success; `1` user or validation error; `2` a pause (budget, dail
   - The frame check below is the safeguard. Output is also trimmed to exactly `round(duration_end × fps)` frames with `-frames:v`.
   - **Output settings:** `-r 30 -fps_mode cfr -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -movflags +faststart`.
   - **Frame size:** exactly `image.sizes[aspect]`. An image of a different size is scaled to fit and padded with white.
+  - **Crop note [M0]:** `image.sizes` generates at 1920×1088 / 1088×1920 (the exact sizes FLUX.2 honors — `1080` is silently rounded to `1072`; §15 #2). Each frame is centre-cropped to 1920×1080 / 1080×1920 before assembly, so the exported video keeps standard dimensions. See `docs/m0-findings.md`.
 - **`--zoom`:**
   - Each unit zooms slowly and evenly from 1.00 to `export.zoom_max` over its duration, centred.
   - To avoid ffmpeg's wobble: scale to 2× first, apply `zoompan` with `d=frames` and `s=<2×size>`, then scale down to the output size.
@@ -997,7 +1005,7 @@ Exit codes: `0` success; `1` user or validation error; `2` a pause (budget, dail
   - a split part
   - the most complex unit
   - Categories are filled in that order without reusing a unit, following the §10.2 rules.
-- **Runs:** each unit on FLUX.2 [klein] 4B, [klein] 9B and dev, **with and without references**, at the project's real aspect ratio. That is 36 images, each with full QC. The cost estimate is shown first and must be confirmed.
+- **Runs:** each unit on FLUX.2 [klein] 4B and [klein] 9B, **with and without references**, at the project's real aspect ratio. That is 24 images, each with full QC. The cost estimate is shown first and must be confirmed. **[M0]:** FLUX.2 dev is excluded — it's unusable synchronously (HTTP 408 timeouts at both 1920×1080/25 steps and 1024×768/20 steps, ~237 s). See `docs/m0-findings.md`.
 - **Report:** `projects/<compare-project>/export/compare.html`, a grid of units × runs. Each cell shows its QC result. Per run, the report shows:
   - no-text failure rate, and overall QC pass rate
   - median and 90th-percentile time per image
@@ -1008,22 +1016,27 @@ Exit codes: `0` success; `1` user or validation error; `2` a pause (budget, dail
 
 ## 15. Open questions to settle in M0 (update this spec with the answers)
 
-1. The FLUX.2 REST response: where the base64 image sits (`result.image`?) and in what format.
-2. Whether `height=1080` / `width=1080` is accepted, or dimensions must be multiples of 16. **Fallback:** generate at 1088 and crop the centre to 1080.
-3. The reference image limit: ≤512 or <512 per side, the accepted formats, and whether PNG transparency matters.
-4. Whether sending `steps` to the Klein models causes an error. Until confirmed, it isn't sent (`supports_steps: false`).
-5. gpt-oss-120b on `/ai/v1/chat/completions`, and whether it supports `response_format`. **Fallback:** the native `/ai/run` format.
-6. qwen3.8-27b's exact model ID, image input format, and whether it accepts multiple images. **Fallback:** a composite image (§9.4).
-7. The error bodies and codes for: 429, the free-plan daily limit, and content refusal. Also whether safety filtering returns an error or a black or blurred image.
-8. Whether a response includes a cost or neuron count. If so, record it in the ledger alongside the estimate.
-9. Real speed per model (measured again in M5).
+Settled in Task 14 from the M0 live probes (Task 13). Full evidence trail — recorded
+Cloudflare fixtures, generated images, neuron costs and the style verdict — is in
+`docs/m0-findings.md`.
+
+1. The FLUX.2 REST response: where the base64 image sits (`result.image`?) and in what format. — **Settled:** `result.image`, base64 **JPEG** (not PNG). No client change — the decode-by-magic-bytes / save-as-PNG plan (§9.2) already handles it. See `docs/m0-findings.md` row 1.
+2. Whether `height=1080` / `width=1080` is accepted, or dimensions must be multiples of 16. **Fallback:** generate at 1088 and crop the centre to 1080. — **Settled:** not accepted exactly — `1080` is silently rounded down to `1072`; `1088` (a multiple of 16) is honored exactly. The fallback applies: `image.sizes` now defaults to `{"16:9": [1920,1088], "9:16": [1088,1920]}` (§2.3), and export centre-crops each frame to 1920×1080 / 1080×1920 (§14.2). See `docs/m0-findings.md` row 2.
+3. The reference image limit: ≤512 or <512 per side, the accepted formats, and whether PNG transparency matters. — **Settled:** both 512 and 513 px accepted (no strict ≤512 rejection); the hard limit is **4** reference images — a 5th is rejected with HTTP 400, code 3030 ("provided too many input images. max=4"); max request width is 2048 (same code 3030). `image.ref_max_side` stays 512. PNG transparency wasn't exercised. See `docs/m0-findings.md` row 3.
+4. Whether sending `steps` to the Klein models causes an error. Until confirmed, it isn't sent (`supports_steps: false`). — **Settled:** no error — `steps` is accepted and silently ignored (no measurable effect on time or cost). `supports_steps: false` stays unchanged. See `docs/m0-findings.md` row 4.
+5. gpt-oss-120b on `/ai/v1/chat/completions`, and whether it supports `response_format`. **Fallback:** the native `/ai/run` format. — **Settled:** works on this endpoint, with and without `response_format: json_schema`; `content` is the JSON string, plus a separate `reasoning`/`reasoning_content` chain-of-thought field. The native `/ai/run` fallback is not needed. See `docs/m0-findings.md` row 5.
+6. qwen3.8-27b's exact model ID, image input format, and whether it accepts multiple images. **Fallback:** a composite image (§9.4). — **Settled:** `@cf/qwen/qwen3.8-27b` is correct; it accepts **2 images per call** as `image_url` content parts, so the composite-image fallback is not needed. Its replies are not clean JSON (a leading `\n\n` or a ` ```json ` fence) — M2/M4 need the lenient JSON extraction described in §9.3/§9.4. See `docs/m0-findings.md` row 6.
+7. The error bodies and codes for: 429, the free-plan daily limit, and content refusal. Also whether safety filtering returns an error or a black or blurred image. — **Settled, partially:** 401 → code 10000 "Authentication error"; 400 → code 3030 (invalid params) or code 7000 ("No route for that URI", unknown model); free-plan daily limit → **HTTP 429, code 4006**, message contains "daily free allocation of 10,000 neurons"; FLUX.2 dev timeout → **HTTP 408, code 3046** "Request timeout". **Content-refusal body is still unknown** — never triggered; safety-filter behaviour (error vs. black/blurred image) remains open. See `docs/m0-findings.md` row 7.
+8. Whether a response includes a cost or neuron count. If so, record it in the ledger alongside the estimate. — **Settled:** yes — every 2xx response carries a `cf-ai-neurons` header (absent on errors). The ledger records `neurons × $0.011/1000` from that header (§9.7); the §9.6 formulas become area-based and are used only as a fallback. See `docs/m0-findings.md` row 8.
+9. Real speed per model (measured again in M5). — **Settled, single samples:** Klein 4B ≈15–28 s, Klein 9B ≈3.5 s, qwen vision ≈7–19 s, LLM ≈0.5–1.8 s. **FLUX.2 dev failed (HTTP 408) at both 1920×1080/25 steps and 1024×768/20 steps (~237 s)** — unusable synchronously. `render.est_seconds_per_image` is left at its placeholder value pending the M5 remeasurement this question already calls for. See `docs/m0-findings.md` row 9.
 10. **Commercial use of generated images (monetised YouTube channel). Must be settled before M5, because it may decide the model on its own.** Findings so far, as of 2026-09-22. This is not legal advice.
     - **FLUX.2 [klein] 4B:** Apache 2.0. Commercial use of outputs is clearly allowed. **Lowest risk.**
     - **FLUX.2 [klein] 9B and FLUX.2 [dev]:** FLUX Non-Commercial License. BFL's own documentation summaries say outputs *may* be used commercially, with limits such as not training competing models on them. The licence restricts *serving the model*, which is Cloudflare's responsibility as BFL's partner. I have **not** read the primary licence text; its Hugging Face link returned 404.
     - **Open issue:** each Cloudflare model page links BFL's general terms of service. Section 1.3(e) of those terms forbids commercial use of BFL's "Services" except where "expressly permitted". It's unclear whether this applies to access through Cloudflare.
     - **Action:** before M5, get written confirmation from Cloudflare (support ticket, or its service-specific terms for Workers AI partner models) that outputs of `flux-2-klein-9b` and `flux-2-dev` may be used commercially. **If that isn't confirmed, restrict `compare` and the default model to Klein 4B.**
-11. The Workers Paid plan's monthly fee.
-12. Whether the style anchor's content leaks into scenes (§8.1). If it does, switch to the single-figure anchor.
+    - **USER ACTION: still pending as of Task 14** — no support ticket opened yet. See `docs/m0-findings.md` row 10.
+11. The Workers Paid plan's monthly fee. — **USER ACTION: still pending as of Task 14** — not yet checked in the dashboard. **New fact found in M0:** the Cloudflare account is currently on the **Workers AI free daily allocation** (10,000 neurons/day), not usage-based Workers Paid billing — M0's `style`/`anchor-leak` probe run hit HTTP 429/code 4006 partway through. See `docs/m0-findings.md` row 11 and plan.md §4.
+12. Whether the style anchor's content leaks into scenes (§8.1). If it does, switch to the single-figure anchor. — **Not run** — blocked by the account's daily neuron limit (both the dev and Klein-9B-fallback anchor attempts got HTTP 429/code 4006 before any generation). Pending: rerun `anchor-leak` after the Workers Paid upgrade or the daily reset. See `docs/m0-findings.md` row 12.
 
 ---
 

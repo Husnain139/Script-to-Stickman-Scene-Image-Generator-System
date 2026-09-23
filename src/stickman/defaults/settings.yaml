@@ -28,8 +28,8 @@ image:
   steps: 25                   # sent only to models that accept it (FLUX.2 dev)
   use_references: true
   sizes:
-    "16:9": [1920, 1080]
-    "9:16": [1080, 1920]
+    "16:9": [1920, 1088]      # 1080 is silently rounded to 1072 by FLUX.2 (M0); export crops to 1920x1080
+    "9:16": [1088, 1920]
   sheet_size: [768, 1024]
   anchor_size: [1024, 768]
   ref_max_side: 512
@@ -61,7 +61,7 @@ test:
   count: 3
 bootstrap:
   anchor_candidates: 4
-  model: "@cf/black-forest-labs/flux-2-dev"
+  model: "@cf/black-forest-labs/flux-2-klein-9b"  # dev is unusable synchronously (M0: HTTP 408 timeouts)
 export:
   fps: 30
   zoom: false
