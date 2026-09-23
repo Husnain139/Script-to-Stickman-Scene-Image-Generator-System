@@ -65,3 +65,28 @@ def test_short_first_scene_merges_into_next():
     lines = timed((0.0, 1.0, "Look."), (1.0, 6.0, "The sun is gone for good tonight."))
     scenes = build_scenes(lines, [[1], [2]], max_lines=3)
     assert line_numbers(merge_short_scenes(scenes, min_scene_seconds=2.0, max_lines=3)) == [[1, 2]]
+
+
+def test_scenes_record_their_group_positions():
+    scenes = build_scenes(LINES, [[1, 2], [3], [4], [5]], max_lines=3)
+    assert [s.groups for s in scenes] == [(1,), (2,), (3,), (4,)]
+
+
+def test_scene_tokens_are_the_original_words_in_order():
+    scene = build_scenes(LINES, [[1, 2], [3], [4], [5]], max_lines=3)[0]
+    assert scene.tokens == ("Historian", "Roger", "E.", "Kirch", "went", "digging", "through", "old", "diaries.")
+    assert len(scene.tokens) == scene.words
+
+
+def test_merging_short_scenes_carries_group_positions():
+    scenes = build_scenes(LINES, [[1, 2], [3], [4], [5]], max_lines=3)
+    merged = merge_short_scenes(scenes, min_scene_seconds=2.0, max_lines=3)
+    assert line_numbers(merged) == [[1, 2, 3], [4], [5]]
+    assert [s.groups for s in merged] == [(1, 2), (3,), (4,)]
+
+
+def test_a_short_first_scene_carries_its_group_into_the_next():
+    scenes = build_scenes(LINES, [[1], [2], [3], [4], [5]], max_lines=4)
+    merged = merge_short_scenes(scenes, min_scene_seconds=2.5, max_lines=4)
+    assert line_numbers(merged) == [[1, 2, 3, 4], [5]]
+    assert [s.groups for s in merged] == [(1, 2, 3, 4), (5,)]

@@ -1,9 +1,10 @@
 import pytest
+from typing import get_args
 
 from stickman.ingest.models import TimedLine
 from stickman.split.engine import SplitDecision
 from stickman.split.scenes import Scene
-from stickman.split.units import build_units, unit_filename
+from stickman.split.units import Part, build_units, unit_filename
 
 TEXT = "Anthropologists studying the Zhuansi in the Kalahari recorded what people talk about by daylight versus by firelight."
 
@@ -50,3 +51,7 @@ def test_unit_filename(unit_id, start, expected):
 def test_unit_filename_property():
     (unit,) = build_units([scene6()], {})
     assert unit.filename == "006_00-21.0.png"
+
+
+def test_part_labels_are_a_fixed_list():
+    assert get_args(Part) == ("1 of 2", "2 of 2")
