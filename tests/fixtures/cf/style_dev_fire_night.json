@@ -1,0 +1,26 @@
+{
+  "status": 408,
+  "elapsed_s": 237.12,
+  "headers": {
+    "date": "Wed, 23 Sep 2026 10:22:03 GMT",
+    "content-type": "application/json",
+    "content-length": "153",
+    "connection": "keep-alive",
+    "cf-auditlog-id": "01a0cdc5-c892-77e5-9993-873cd55c4045",
+    "api-version": "2026-09-25.epoch",
+    "cf-ai-req-id": "79c827b8-3bf1-4ffb-8beb-bbb6e428ebdf",
+    "server": "cloudflare",
+    "cf-ray": "a3f8cdad9f194b55-KHI"
+  },
+  "body": {
+    "errors": [
+      {
+        "message": "AiError: AiError: Request timeout (79c827b8-3bf1-4ffb-8beb-bbb6e428ebdf)",
+        "code": 3046
+      }
+    ],
+    "success": false,
+    "result": {},
+    "messages": []
+  }
+}

@@ -166,7 +166,11 @@ class Probe:
             fields.append((key, (None, str(value))))
         for index, ref in enumerate(refs):
             fields.append((f"input_image_{index}", (f"input_image_{index}.png", ref, "image/png")))
-        response = await self.call(step, name, "POST", f"/ai/run/{model}", files=fields)
+        try:
+            response = await self.call(step, name, "POST", f"/ai/run/{model}", files=fields)
+        except httpx.TimeoutException:
+            print(f"[{step}/{name}] client timeout")
+            return None
         data = extract_image(response)
         if data:
             image = Image.open(io.BytesIO(data))
@@ -255,9 +259,13 @@ async def step_errors(p: Probe) -> None:
 
 
 async def step_style(p: Probe) -> None:
-    for label, model, extra in (("klein4b", KLEIN_4B, None), ("klein9b", KLEIN_9B, None), ("dev", DEV, {"steps": 25})):
+    for label, model, width, height, extra in (
+        ("klein4b", KLEIN_4B, 1920, 1088, None),
+        ("klein9b", KLEIN_9B, 1920, 1088, None),
+        ("dev", DEV, 1024, 768, {"steps": 20}),
+    ):
         for scene, text in STYLE_SCENES.items():
-            await p.image("style", f"{label}_{scene}", model, p.scene_prompt(text), 1920, 1080, extra=extra)
+            await p.image("style", f"{label}_{scene}", model, p.scene_prompt(text), width, height, extra=extra)
     print(f"Open {OUT / 'style'} and judge style, consistency and text-free output by eye.")
 
 
@@ -266,9 +274,14 @@ async def step_anchor_leak(p: Probe) -> None:
         "two stickmen talking; the taller one gestures with an open palm, the shorter one listens. "
         "A light hatched ground shadow."
     )
-    anchor = await p.image("anchor_leak", "anchor_two_figures", DEV, anchor_prompt, 1024, 768, extra={"steps": 25})
+    anchor = await p.image("anchor_leak", "anchor_two_figures", DEV, anchor_prompt, 1024, 768, extra={"steps": 20})
+    anchor_model = DEV
+    if not anchor:
+        anchor_model = KLEIN_9B
+        anchor = await p.image("anchor_leak", "anchor_two_figures_klein9b", KLEIN_9B, anchor_prompt, 1024, 768)
     if not anchor:
         sys.exit("Anchor generation failed; see the recorded response.")
+    print(f"     anchor produced by {anchor_model}")
     ref = fit(anchor, p.settings.image.ref_max_side)
     for index, scene in enumerate(SINGLE_FIGURE_SCENES, 1):
         prompt = (
@@ -276,7 +289,7 @@ async def step_anchor_leak(p: Probe) -> None:
             "Reference images: image 0 shows the drawing style only — match its line weight and look, "
             f"not its content, and do not copy its figures.\n\n{p.strict}"
         )
-        await p.image("anchor_leak", f"single_{index}", KLEIN_9B, prompt, 1920, 1080, seed=100 + index, refs=[ref])
+        await p.image("anchor_leak", f"single_{index}", KLEIN_9B, prompt, 1920, 1088, seed=100 + index, refs=[ref])
     print("Count the figures in m0_out/anchor_leak/single_*.png. More than one figure anywhere = the anchor leaks.")
 
 

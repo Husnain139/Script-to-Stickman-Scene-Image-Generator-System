@@ -1,0 +1,26 @@
+{
+  "status": 429,
+  "elapsed_s": 0.31,
+  "headers": {
+    "date": "Wed, 23 Sep 2026 10:22:03 GMT",
+    "content-type": "application/json",
+    "content-length": "286",
+    "connection": "keep-alive",
+    "cf-auditlog-id": "01a0cdc9-6811-75b4-8f02-315f8c775c46",
+    "api-version": "2026-09-25.epoch",
+    "cf-ai-req-id": "e93934d0-524d-4be0-8bb4-6210ac53ea08",
+    "server": "cloudflare",
+    "cf-ray": "a3f8d3799e6b4b55-KHI"
+  },
+  "body": {
+    "errors": [
+      {
+        "message": "AiError: AiError: you have used up your daily free allocatio...<205 chars>",
+        "code": 4006
+      }
+    ],
+    "success": false,
+    "result": {},
+    "messages": []
+  }
+}
