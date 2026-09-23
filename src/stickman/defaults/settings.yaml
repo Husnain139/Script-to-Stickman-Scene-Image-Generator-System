@@ -1,7 +1,7 @@
 # stickman settings (spec §2.3). Every key is optional; omitted keys use these defaults.
 schema_version: 1
 account:
-  plan: paid                  # free | paid — daily-limit stop only applies on free
+  plan: free                  # free | paid — daily-limit stop only applies on free
 input:
   max_minutes: 5              # design limit; longer scripts run with a warning
 project:
@@ -24,7 +24,7 @@ llm:
   batch_size: 8
   temperature: 0.4
 image:
-  model: "@cf/black-forest-labs/flux-2-klein-9b"
+  model: "@cf/black-forest-labs/flux-2-klein-4b"   # free-plan default (user decision 2026-09-23); M5 may switch to 9B
   steps: 25                   # sent only to models that accept it (FLUX.2 dev)
   use_references: true
   sizes:

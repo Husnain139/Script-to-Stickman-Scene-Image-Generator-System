@@ -54,6 +54,11 @@ Turn a timestamped narration script into a set of consistent, high-quality stick
     - JSON and CSV manifests
 11. **Tracking:** a cost ledger, weekly budget (warn at 80%, stop at 100% unless `--force`), run logs, and an end-of-run summary.
 
+### Candidate: small-size generation + local upscale (free-plan throughput)
+- **What:** generate at a smaller size, such as 1280×720 (about 44% of the area of 1920×1088, so about 90 instead of 206 neurons on Klein 4B), then upscale locally to 1920×1080 at export. Clean black line art on white upscales well.
+- **Effect:** roughly doubles the images per free day (to about 100 or more), which is about 1 video a day.
+- **Status:** proposed on 2026-09-23. Scheduled as a setting for M3 (generation size) and M8 (export upscale). Checked in M5 against native 1920×1088 quality before it becomes a default.
+
 ### Later (in priority order)
 1. **Audio input:** transcribe the voiceover with Whisper on Workers AI to produce the timestamped script. Per-word times make split points exact.
 2. **Batch queue:** several scripts run overnight within the budget.
@@ -124,7 +129,7 @@ Both figures **require Workers Paid** (usage-based billing) — the account's fr
 
 - **Style:** reference images #1 and #2 are the base look. Thin lines, rounded mitten hands, outlined oval feet, a hatched ground shadow. Filled shoes, tie and cape are optional costume.
 - **Planning LLM:** gpt-oss-120b on Workers AI, with Llama 3.3 70B (JSON mode) as fallback. There is no second LLM provider.
-- **Image model:** FLUX.2 family. Klein 9B is the default until the M5 comparison.
+- **Image model:** FLUX.2 family. **Klein 4B is the default** (changed from 9B on 2026-09-23, after M0). The user is staying on Workers Free, where about 48 Klein 4B images fit in a day's free allowance, compared with about 6 on Klein 9B. `bootstrap.model` stays Klein 9B, because it runs once (about 5 images) and the anchor's quality matters most. M5 may still switch the default to Klein 9B.
 - **Text handling:**
   - Fragments are always merged, and the LLM decides which lines are fragments.
   - Short complete lines stay separate by default, with merging available as a setting.
@@ -138,5 +143,6 @@ Both figures **require Workers Paid** (usage-based billing) — the account's fr
 - **Files:** `plan.yaml` holds your content. `state.json` holds the tool's data. Manifests are always regenerated from both.
 - **Interface:** a command-line tool plus a local review page. The plan is read-only in the browser, except for `image_prompt`.
 - **Editor:** CapCut. The export is an MP4, images and an SRT, with no project files.
-- **Budget:** $15/week, a warning at 80%, a stop at 100% unless `--force`. Workers Paid plan.
+- **Budget:** $15/week, a warning at 80%, a stop at 100% unless `--force`.
+- **Cloudflare plan (2026-09-23):** the user stays on **Workers Free** and has no plan to pay. `account.plan` defaults to `free`, so the daily-limit stop and `resume` (next day) carry a video across days (about 2 days per 90-image video on Klein 4B). **Only one account:** rotating several free accounts or tokens to get around the daily limit is ruled out. It likely breaks Cloudflare's terms and puts every account at risk of suspension.
 - **Single-scene replanning (confirmed):** `stickman replan <unit> --hint "..."` asks the LLM to redesign one unit, with an optional hint.

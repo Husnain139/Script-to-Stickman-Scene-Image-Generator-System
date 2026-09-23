@@ -82,7 +82,7 @@ One-time setup:
 
 | Key | Default | Notes |
 |---|---|---|
-| `account.plan` | `paid` | `free` or `paid`. The daily-limit stop applies only when this is `free`. |
+| `account.plan` | `free` | `free` or `paid`. The daily-limit stop applies only when this is `free`. The default is `free` because the user decided to stay on the Workers Free plan (2026-09-23). |
 | `input.max_minutes` | `5` | The design limit. Longer scripts are processed with a warning that they are outside the tested range. |
 | `project.recent_hours` | `24` | Window used by the project-selection rule (§13) |
 | `timing.fallback_wps` | `2.5` | Words per second, used when the pace can't be measured |
@@ -98,7 +98,7 @@ One-time setup:
 | `llm.vision_model` | `@cf/qwen/qwen3.8-27b` | **[M0]** settled: ID confirmed, 2 images per call (§15 #6). See `docs/m0-findings.md`. |
 | `llm.batch_size` | `8` | Units per describe batch |
 | `llm.temperature` | `0.4` | |
-| `image.model` | `@cf/black-forest-labs/flux-2-klein-9b` | Changed after M5 |
+| `image.model` | `@cf/black-forest-labs/flux-2-klein-4b` | The free-plan default (user decision, 2026-09-23). It costs about 206 neurons an image, so about 48 images a day fit in the free allowance, and a run resumes after the daily reset. M5 may switch it to Klein 9B. |
 | `image.steps` | `25` | Sent only to models that accept it (FLUX.2 dev). Klein models use a fixed number of steps. |
 | `image.use_references` | `true` | |
 | `image.sizes` | `{"16:9": [1920,1088], "9:16": [1088,1920]}` | **[M0]** settled: `1080` is silently rounded down to `1072`; `1088` is exact. Export centre-crops to 1920×1080 / 1080×1920 (§14.2). See `docs/m0-findings.md`. |
@@ -253,7 +253,7 @@ schema_version: 1
 project: first-sleep
 aspect: "16:9"               # "16:9" | "9:16"
 style_version: 1
-image_model: "@cf/black-forest-labs/flux-2-klein-9b"   # copied from settings at creation
+image_model: "@cf/black-forest-labs/flux-2-klein-4b"   # copied from settings at creation
 duration_end: 133.852         # computed end of video
 pace_wps: 2.6746
 cast:
