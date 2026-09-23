@@ -1,0 +1,31 @@
+[project]
+name = "stickman"
+version = "0.1.0"
+description = "Script-to-stickman scene image generator (Cloudflare Workers AI)"
+requires-python = ">=3.12"
+dependencies = [
+  "typer>=0.12",
+  "rich>=13",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "ruamel.yaml>=0.18",
+  "httpx>=0.27",
+]
+
+[project.scripts]
+stickman = "stickman.cli:app"
+
+[dependency-groups]
+dev = ["pytest>=8", "pillow>=10"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stickman"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: calls the real Cloudflare API and costs money (run with -m live)"]
+addopts = "-m 'not live' --import-mode=importlib"

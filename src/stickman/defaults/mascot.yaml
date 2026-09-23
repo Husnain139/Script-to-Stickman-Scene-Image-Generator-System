@@ -1,0 +1,16 @@
+schema_version: 1
+id: mascot
+name: "Everyman"
+figures: 1
+# identity: visible in every shot (close-ups, lying under a blanket, etc.)
+identity: >-
+  the main character: an average-height stickman with a large round head, exactly three short
+  hair strokes curling to the right on top of the head, dot eyes and short curved eyebrows
+# default_outfit: optional costume; may be hidden (blanket, close-up) or omitted per scene
+default_outfit: >-
+  a small solid-black necktie and solid-black shoes
+sheet: library/mascot/sheet_v1.png
+ref: library/mascot/ref_v1.png
+seed: null            # set at bootstrap approval
+model: null
+style_version: 1

@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+projects/
+library/
+ledger.jsonl
+m0_out/
+style_refs/
