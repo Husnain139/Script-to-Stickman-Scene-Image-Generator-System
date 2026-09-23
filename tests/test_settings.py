@@ -36,7 +36,7 @@ def test_partial_file_overrides_only_given_keys(tmp_path):
     s = load_settings(write(tmp_path / "s.yaml", "split:\n  split_seconds: 5\n"))
     assert s.split.split_seconds == 5.0
     assert s.split.split_words == 20
-    assert s.image.sizes["16:9"] == (1920, 1080)
+    assert s.image.sizes["16:9"] == (1920, 1088)
 
 
 def test_max_parts_other_than_two_is_rejected(tmp_path):

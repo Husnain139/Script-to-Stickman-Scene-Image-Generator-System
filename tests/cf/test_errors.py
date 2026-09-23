@@ -3,6 +3,10 @@ import pytest
 from stickman.cf.errors import CFError, ErrorCategory, classify
 
 DAILY = "You have used up your daily free allocation of 10,000 neurons, please upgrade"
+# Recorded in M0 (tests/fixtures/cf/style_dev_clock_3am.json etc.): the probe's
+# fixture recorder truncates long error messages at 60 chars, which lands
+# mid-word, just before "allocation" finishes.
+DAILY_TRUNCATED = "AiError: AiError: you have used up your daily free allocatio...<205 chars>"
 
 
 @pytest.mark.parametrize(
@@ -14,6 +18,8 @@ DAILY = "You have used up your daily free allocation of 10,000 neurons, please u
         (429, DAILY, "free", ErrorCategory.DAILY_LIMIT),
         (429, DAILY, "paid", ErrorCategory.RATE_LIMITED),
         (400, DAILY, "free", ErrorCategory.DAILY_LIMIT),
+        (429, DAILY_TRUNCATED, "free", ErrorCategory.DAILY_LIMIT),
+        (429, DAILY_TRUNCATED, "paid", ErrorCategory.RATE_LIMITED),
         (500, "internal error", "paid", ErrorCategory.TRANSIENT),
         (503, "", "paid", ErrorCategory.TRANSIENT),
         (400, "width must be at most 1920", "paid", ErrorCategory.BAD_REQUEST),

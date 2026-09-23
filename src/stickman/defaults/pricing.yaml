@@ -1,4 +1,7 @@
-# Cost estimates (spec §9.6). Tiles = ceil(w/512) * ceil(h/512); MP rounded up to 2 decimals.
+# Cost estimates (spec §9.6). Used only for pre-call estimates and for calls with
+# no cf-ai-neurons header (errors/timeouts) — the ledger uses the actual header
+# value when present (spec §9.7). Tiles = w*h/262144; MP = w*h/1048576 (area-based;
+# confirmed against observed neuron costs in M0, docs/m0-findings.md).
 schema_version: 1
 free_daily_usd: 0.11          # 10,000 neurons x $0.011 / 1k
 models:
