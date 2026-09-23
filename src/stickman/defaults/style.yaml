@@ -1,0 +1,17 @@
+schema_version: 1
+style_version: 1
+style_text: >-
+  Hand-drawn cartoon stickman illustration, clean black ink line art on a plain white background.
+  Thin, even line weight. Characters have large round circle heads, simple dot eyes, short curved
+  eyebrows, simple expressive mouths, and 2 to 4 short hair strokes on top of the head. Bodies,
+  arms and legs are single thin lines. Hands are small rounded mitten shapes without fingers.
+  Feet are small outlined ovals. A light hatched shadow under the feet or a simple ground line.
+  Minimal clutter and lots of white space. No colour, no grey fills, no shading, no gradients.
+strict_clause: >-
+  Absolutely no text of any kind anywhere in the image: no letters, no words, no numbers, no
+  captions, no labels, no signatures, no logos, no watermarks. The background stays plain white
+  and unfilled.
+negative_prompt: >-
+  text, letters, words, numbers, caption, label, signature, watermark, logo, colour, colored,
+  shading, grey fill, gradient, photorealistic, 3d render, dark background, filled background,
+  extra limbs, extra heads, fingers

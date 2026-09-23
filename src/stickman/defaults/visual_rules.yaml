@@ -1,0 +1,12 @@
+schema_version: 1
+rules:
+  - "Anything that normally contains text is drawn with shapes only, no letters or numbers."
+  - "Daytime: a small sun in an upper corner. Night: a small crescent moon and a few stars. Never fill or darken the background."
+  - "Firelight: flame lines around the fire and short straight lines radiating outward."
+  - "Sleep: closed eyes (curved lines), lying pose, a simple blanket. Never 'Zzz'."
+  - "Clocks: a round face with two hands, no numerals."
+  - "Books and papers: blank pages or a few wavy lines. Screens: blank or simple icons/shapes."
+  - "Charts: bars or an arrow line without labels. Money: coins or bills without numbers or symbols."
+  - "Maps and signs: simple shapes; no names or writing."
+  - "Thoughts and dreams: a cloud bubble containing a small picture, never words."
+  - "Sensitive content: tasteful and symbolic, never graphic."
