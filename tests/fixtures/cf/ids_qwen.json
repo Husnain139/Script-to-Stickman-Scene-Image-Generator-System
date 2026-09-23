@@ -1,0 +1,304 @@
+{
+  "status": 200,
+  "elapsed_s": 0.44,
+  "headers": {
+    "date": "Wed, 23 Sep 2026 08:55:00 GMT",
+    "content-type": "application/json",
+    "transfer-encoding": "chunked",
+    "connection": "keep-alive",
+    "cf-auditlog-id": "01a0cd79-b24c-7510-abde-420acd703fc8",
+    "cf-ray": "a3f853f068dd24d9-KHI",
+    "cf-cache-status": "DYNAMIC",
+    "access-control-allow-origin": "*",
+    "cache-control": "no-cache",
+    "content-encoding": "gzip",
+    "server": "cloudflare",
+    "vary": "accept-encoding",
+    "cdn-cache-control": "public, max-age=3600, stale-while-revalidate=600",
+    "ratelimit": "\"default\";r=1199;t=1",
+    "ratelimit-policy": "\"default\";q=1200;w=300",
+    "api-version": "2026-09-25.epoch"
+  },
+  "body": {
+    "success": true,
+    "result": [
+      {
+        "id": "cb254e3b-372b-4d4e-8526-ada79940427a",
+        "source": 1,
+        "name": "@cf/qwen/qwen3-embedding-0.6b",
+        "description": "The Qwen3 Embedding model series is the latest proprietary model of the Qwen family, specifically designed for text embedding and ranking tasks. ",
+        "task": {
+          "id": "0137cdcf-162a-4108-94f2-1ca59e8c65ee",
+          "name": "Text Embeddings",
+          "description": "Feature extraction models transform raw data into numerical ...<296 chars>"
+        },
+        "created_at": "2025-06-18 20:23:22.086",
+        "tags": [],
+        "properties": [
+          {
+            "property_id": "context_window",
+            "value": "8192"
+          },
+          {
+            "property_id": "price",
+            "value": [
+              {
+                "unit": "per M input tokens",
+                "price": 0.0118,
+                "currency": "USD"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "ad01ab83-baf8-4e7b-8fed-a0a219d4eb45",
+        "source": 1,
+        "name": "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+        "description": "DeepSeek-R1-Distill-Qwen-32B is a model distilled from DeepSeek-R1 based on Qwen2.5. It outperforms OpenAI-o1-mini across various benchmarks, achieving new state-of-the-art results for dense models.",
+        "task": {
+          "id": "c329a1f9-323d-4e91-b2aa-582dd4188d34",
+          "name": "Text Generation",
+          "description": "Family of generative text models, such as large language models (LLM), that can be adapted for a variety of natural language tasks."
+        },
+        "created_at": "2025-01-22 19:48:55.776",
+        "tags": [],
+        "properties": [
+          {
+            "property_id": "context_window",
+            "value": "80000"
+          },
+          {
+            "property_id": "price",
+            "value": [
+              {
+                "unit": "per M input tokens",
+                "price": 0.497,
+                "currency": "USD"
+              },
+              {
+                "unit": "per M output tokens",
+                "price": 4.881,
+                "currency": "USD"
+              }
+            ]
+          },
+          {
+            "property_id": "reasoning",
+            "value": "true"
+          },
+          {
+            "property_id": "terms",
+            "value": "https://github.com/deepseek-ai/DeepSeek-R1/blob/main/LICENSE"
+          }
+        ]
+      },
+      {
+        "id": "51b71d5b-8bc0-4489-a107-95e542b69914",
+        "source": 1,
+        "name": "@cf/qwen/qwen2.5-coder-32b-instruct",
+        "description": "Qwen2.5-Coder is the latest series of Code-Specific Qwen lar...<325 chars>",
+        "task": {
+          "id": "c329a1f9-323d-4e91-b2aa-582dd4188d34",
+          "name": "Text Generation",
+          "description": "Family of generative text models, such as large language models (LLM), that can be adapted for a variety of natural language tasks."
+        },
+        "created_at": "2025-02-27 00:31:43.829",
+        "tags": [],
+        "properties": [
+          {
+            "property_id": "context_window",
+            "value": "32768"
+          },
+          {
+            "property_id": "price",
+            "value": [
+              {
+                "unit": "per M input tokens",
+                "price": 0.66,
+                "currency": "USD"
+              },
+              {
+                "unit": "per M output tokens",
+                "price": 1,
+                "currency": "USD"
+              }
+            ]
+          },
+          {
+            "property_id": "lora",
+            "value": "true"
+          }
+        ]
+      },
+      {
+        "id": "4090e54c-eee4-4221-b410-10c1c0f92f17",
+        "source": 1,
+        "name": "@cf/qwen/qwen3-30b-a3b-fp8",
+        "description": "Qwen3 is the latest generation of large language models in Q...<305 chars>",
+        "task": {
+          "id": "c329a1f9-323d-4e91-b2aa-582dd4188d34",
+          "name": "Text Generation",
+          "description": "Family of generative text models, such as large language models (LLM), that can be adapted for a variety of natural language tasks."
+        },
+        "created_at": "2025-04-30 21:36:10.009",
+        "tags": [],
+        "properties": [
+          {
+            "property_id": "async_queue",
+            "value": "true"
+          },
+          {
+            "property_id": "context_window",
+            "value": "32768"
+          },
+          {
+            "property_id": "price",
+            "value": [
+              {
+                "unit": "per M input tokens",
+                "price": 0.0509,
+                "currency": "USD"
+              },
+              {
+                "unit": "per M output tokens",
+                "price": 0.335,
+                "currency": "USD"
+              }
+            ]
+          },
+          {
+            "property_id": "function_calling",
+            "value": "true"
+          },
+          {
+            "property_id": "reasoning",
+            "value": "true"
+          }
+        ]
+      },
+      {
+        "id": "22338608-b54d-4f04-884e-ab06f3dbbf3e",
+        "source": 1,
+        "name": "@cf/qwen/qwen3.8-27b",
+        "description": "Qwen 3.8 27B is a 27-billion-parameter instruction-tuned language model from Alibaba's Qwen family, designed for vision, efficient general-purpose text generation and agentic workloads.",
+        "task": {
+          "id": "c329a1f9-323d-4e91-b2aa-582dd4188d34",
+          "name": "Text Generation",
+          "description": "Family of generative text models, such as large language models (LLM), that can be adapted for a variety of natural language tasks."
+        },
+        "created_at": "2026-08-17 07:13:11.641",
+        "tags": [],
+        "properties": [
+          {
+            "property_id": "async_queue",
+            "value": "true"
+          },
+          {
+            "property_id": "context_window",
+            "value": "262144"
+          },
+          {
+            "property_id": "function_calling",
+            "value": "true"
+          },
+          {
+            "property_id": "reasoning",
+            "value": "true"
+          },
+          {
+            "property_id": "reasoning_effort",
+            "value": {
+              "supported_efforts": [
+                "xhigh",
+                "medium",
+                "low"
+              ],
+              "default_effort": "xhigh",
+              "normalizes_to": {
+                "null": "xhigh"
+              },
+              "mandatory": false,
+              "default_enabled": true,
+              "supports_max_tokens": false
+            }
+          },
+          {
+            "property_id": "vision",
+            "value": "true"
+          },
+          {
+            "property_id": "price",
+            "value": [
+              {
+                "unit": "per M input tokens",
+                "price": 0.45,
+                "currency": "USD"
+              },
+              {
+                "unit": "per M output tokens",
+                "price": 3.2,
+                "currency": "USD"
+              },
+              {
+                "unit": "per M cached input tokens",
+                "price": 0.05,
+                "currency": "USD"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "02c16efa-29f5-4304-8e6c-3d188889f875",
+        "source": 1,
+        "name": "@cf/qwen/qwq-32b",
+        "description": "QwQ is the reasoning model of the Qwen series. Compared with...<412 chars>",
+        "task": {
+          "id": "c329a1f9-323d-4e91-b2aa-582dd4188d34",
+          "name": "Text Generation",
+          "description": "Family of generative text models, such as large language models (LLM), that can be adapted for a variety of natural language tasks."
+        },
+        "created_at": "2025-03-05 21:52:40.974",
+        "tags": [],
+        "properties": [
+          {
+            "property_id": "context_window",
+            "value": "24000"
+          },
+          {
+            "property_id": "price",
+            "value": [
+              {
+                "unit": "per M input tokens",
+                "price": 0.66,
+                "currency": "USD"
+              },
+              {
+                "unit": "per M output tokens",
+                "price": 1,
+                "currency": "USD"
+              }
+            ]
+          },
+          {
+            "property_id": "lora",
+            "value": "true"
+          },
+          {
+            "property_id": "reasoning",
+            "value": "true"
+          }
+        ]
+      }
+    ],
+    "errors": [],
+    "messages": [],
+    "result_info": {
+      "count": 6,
+      "page": 1,
+      "per_page": 100,
+      "total_count": 310
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "status": 400,
+  "elapsed_s": 1.28,
+  "headers": {
+    "date": "Wed, 23 Sep 2026 09:08:31 GMT",
+    "content-type": "application/json",
+    "content-length": "174",
+    "connection": "keep-alive",
+    "api-version": "2026-09-25.epoch",
+    "cf-ai-req-id": "c191bd0d-dfdd-4826-9683-8b2bbfc742bb",
+    "cf-auditlog-id": "01a0cd86-0fb4-7587-b0aa-a40c7ea767f1",
+    "server": "cloudflare",
+    "cf-ray": "a3f867b9081ef8d3-SIN"
+  },
+  "body": {
+    "errors": [
+      {
+        "message": "AiError: AiError: 5000 is too large, max width is 2048 (c191bd0d-dfdd-4826-9683-8b2bbfc742bb)",
+        "code": 3030
+      }
+    ],
+    "success": false,
+    "result": {},
+    "messages": []
+  }
+}

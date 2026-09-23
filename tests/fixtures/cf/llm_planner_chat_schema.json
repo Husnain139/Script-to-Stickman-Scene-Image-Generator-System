@@ -1,0 +1,51 @@
+{
+  "status": 200,
+  "elapsed_s": 1.69,
+  "headers": {
+    "date": "Wed, 23 Sep 2026 08:55:13 GMT",
+    "content-type": "application/json",
+    "transfer-encoding": "chunked",
+    "connection": "keep-alive",
+    "cf-auditlog-id": "01a0cd79-e1d3-7be2-9212-022125b0eb75",
+    "api-version": "2026-09-25.epoch",
+    "cf-ai-neurons": "7.52",
+    "content-encoding": "gzip",
+    "server": "cloudflare",
+    "cf-ray": "a3f8543c696ad56b-KHI"
+  },
+  "body": {
+    "id": "id-1790153713716",
+    "object": "chat.completion",
+    "created": 1790153713,
+    "model": "@cf/openai/gpt-oss-120b",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "annotations": null,
+          "audio": null,
+          "content": "{\n  \"animal\": \"dog\",\n  \"legs\": 4\n}",
+          "function_call": null,
+          "reasoning": "The user asks: \"Give one animal and its number of legs.\" Sim...<206 chars>",
+          "reasoning_content": "The user asks: \"Give one animal and its number of legs.\" Sim...<206 chars>",
+          "refusal": null,
+          "role": "assistant"
+        },
+        "routed_experts": null,
+        "stop_reason": null,
+        "token_ids": null
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 80,
+      "completion_tokens": 73,
+      "total_tokens": 153,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "neurons": 7.522710800170898
+    }
+  }
+}

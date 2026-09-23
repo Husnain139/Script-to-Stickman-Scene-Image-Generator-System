@@ -1,0 +1,24 @@
+{
+  "status": 401,
+  "elapsed_s": 0.43,
+  "headers": {
+    "date": "Wed, 23 Sep 2026 09:08:29 GMT",
+    "content-type": "application/json",
+    "content-length": "104",
+    "connection": "keep-alive",
+    "cf-auditlog-id": "01a0cd86-0e0d-7e58-8b32-8a898e1a2db6",
+    "server": "cloudflare",
+    "cf-ray": "a3f867b66a6afe07-SIN"
+  },
+  "body": {
+    "result": null,
+    "success": false,
+    "errors": [
+      {
+        "code": 10000,
+        "message": "Authentication error"
+      }
+    ],
+    "messages": []
+  }
+}

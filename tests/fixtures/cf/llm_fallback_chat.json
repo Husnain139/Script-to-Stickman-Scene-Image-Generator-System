@@ -1,0 +1,50 @@
+{
+  "status": 200,
+  "elapsed_s": 0.69,
+  "headers": {
+    "date": "Wed, 23 Sep 2026 08:55:15 GMT",
+    "content-type": "application/json",
+    "transfer-encoding": "chunked",
+    "connection": "keep-alive",
+    "cf-auditlog-id": "01a0cd79-ebf1-7aad-8497-76f6afeaff69",
+    "api-version": "2026-09-25.epoch",
+    "cf-ai-neurons": "3.94",
+    "content-encoding": "gzip",
+    "server": "cloudflare",
+    "cf-ray": "a3f8544cadd7d56b-KHI"
+  },
+  "body": {
+    "id": "id-1790153715317",
+    "object": "chat.completion",
+    "created": 1790153715,
+    "model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "annotations": null,
+          "audio": null,
+          "content": "{\"animal\": \"cat\", \"legs\": 4}",
+          "function_call": null,
+          "reasoning": null,
+          "refusal": null,
+          "role": "assistant"
+        },
+        "routed_experts": null,
+        "stop_reason": null,
+        "token_ids": null
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 48,
+      "completion_tokens": 13,
+      "total_tokens": 61,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "neurons": 3.9425175189971924
+    }
+  }
+}
