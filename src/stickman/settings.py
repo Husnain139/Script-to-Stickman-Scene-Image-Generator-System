@@ -32,7 +32,7 @@ class _Section(BaseModel):
 
 
 class AccountSettings(_Section):
-    plan: Literal["free", "paid"] = "paid"
+    plan: Literal["free", "paid"] = "free"
 
 
 class InputSettings(_Section):
@@ -76,7 +76,7 @@ class LLMSettings(_Section):
 
 
 class ImageSettings(_Section):
-    model: str = "@cf/black-forest-labs/flux-2-klein-9b"
+    model: str = "@cf/black-forest-labs/flux-2-klein-4b"
     steps: int = Field(25, ge=1)
     use_references: bool = True
     sizes: dict[Aspect, tuple[int, int]] = Field(

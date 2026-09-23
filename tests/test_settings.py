@@ -28,6 +28,13 @@ def test_packaged_default_settings_match_model_defaults(tmp_path):
     assert load_settings(path).model_dump() == Settings().model_dump()
 
 
+def test_defaults_target_the_free_plan_on_klein_4b():
+    s = Settings()
+    assert s.account.plan == "free"
+    assert s.image.model == "@cf/black-forest-labs/flux-2-klein-4b"
+    assert s.bootstrap.model == "@cf/black-forest-labs/flux-2-klein-9b"
+
+
 def test_missing_settings_file_gives_defaults(tmp_path):
     assert load_settings(tmp_path / "missing.yaml") == Settings()
 
