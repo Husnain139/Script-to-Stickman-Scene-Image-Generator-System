@@ -15,6 +15,8 @@ from stickman.ingest.models import TimedLine
         ('She said "stop."', "Nobody listened.", False),
         ("Is this real?", None, False),
         ("The watch.", "And people used it.", False),
+        ("He said “", "Stop.", True),  # (a) opening curly quote → fragment
+        ('He said “stop.”', "Nobody moved.", False),  # (a) closing curly quote → complete
     ],
 )
 def test_is_likely_fragment(text, next_text, expected):
