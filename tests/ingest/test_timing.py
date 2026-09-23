@@ -83,7 +83,7 @@ def test_parse_duration(value, expected):
     assert parse_duration(value) == expected
 
 
-@pytest.mark.parametrize("value", ["abc", "1:2:3:4", "-5", ""])
+@pytest.mark.parametrize("value", ["abc", "1:2:3:4", "-5", "", "inf", "nan", "Infinity", "1e400", "1:inf"])
 def test_parse_duration_rejects_bad_values(value):
     with pytest.raises(ValueError):
         parse_duration(value)

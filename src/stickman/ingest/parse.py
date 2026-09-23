@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 
 from stickman.ingest.models import RawLine
@@ -109,9 +110,11 @@ def parse_duration(value: str) -> float:
         numbers = [float(part) for part in parts]
     except ValueError:
         raise ValueError(f"invalid duration {value!r}; use M:SS, H:MM:SS or seconds") from None
-    if len(numbers) > 3 or any(n < 0 for n in numbers):
+    if len(numbers) > 3 or any(n < 0 for n in numbers) or any(not math.isfinite(n) for n in numbers):
         raise ValueError(f"invalid duration {value!r}; use M:SS, H:MM:SS or seconds")
     total = 0.0
     for number in numbers:
         total = total * 60 + number
+    if not math.isfinite(total):
+        raise ValueError(f"invalid duration {value!r}; use M:SS, H:MM:SS or seconds")
     return total
