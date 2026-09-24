@@ -321,6 +321,8 @@ scenes:
 - When any visual field of a locked unit changes, the tool warns: *"Unit 006a has a locked prompt; field changes won't affect it. Run `stickman rebuild-prompt 006a` to unlock and rebuild."*
 - When the tool writes `plan.yaml`, it uses ruamel round-trip mode, so your comments and field order are kept.
 
+**`merge_check` entries [M2]:** `{line: 13, rules: merge, llm: separate}`. `rules` is what the fragment rules (§4.4) say about merging that line with the next one, and `llm` is what the analyse stage did. The last line is never listed.
+
 ### 5.2 `state.json` (tool data)
 
 ```json
@@ -406,6 +408,7 @@ An entry whose `style_version` is not the current `style.yaml` version is flagge
   - **2nd failure:** the same request goes to `llm.fallback_model` with `response_format: {type: json_schema, json_schema: <schema>}`.
   - **The fallback also fails twice:** planning stops. The errors are written to `logs/`. Batches that already succeeded stay in `.cache/llm/`, so running the command again continues from the failed stage.
 - **Caching:** the cache key is `sha256(model + stage + prompt + schema)`.
+  - **[M2]** `model` is always `llm.planner_model`, even when the fallback produced the cached answer, so a rerun finds it. `prompt` is the system prompt plus the user message. The stage's JSON schema is appended to the system prompt (`SCHEMA:`), because the planner's first attempts are sent without `response_format`. `replan` never reads the cache, so asking again gives a new design.
 
 ### 6.2 Stage 1: analyse
 **System prompt:**
@@ -626,6 +629,8 @@ the pose described above.
 - **Slots 2–3:** the next extras' references, in `characters` order.
 - A cast member without an approved sheet appears in the text only.
 
+**Small wording rules [M2]:** trailing full stops of `visual_idea`, `composition`, cast descriptions and actions are trimmed, so the template's own full stop isn't doubled. `visual_idea` and `composition` start with a capital letter. "a" or "an" matches the emotion. A unit with no characters says `Characters: none.`
+
 ### 7.5 Prompt fixes for retries (keyed by QC reason, §11.3)
 | Reason | Change on retry |
 |---|---|
@@ -716,6 +721,8 @@ JSON: {model, messages:[{role:system,…},{role:user,…}], temperature, max_tok
 | timeout | No response within `render.timeout_s` | `transient`, and the ledger entry is `billing: possibly_billed` |
 
 **Circuit breaker:** when `retry.circuit_breaker` `transient` failures happen in a row (a success resets the count), the run pauses. It saves state and prints *"Possible outage — run `stickman resume` later."*
+
+**Retry counts [M2]:** `retry.rate_limit_max` and `retry.transient_max` count retries after the first try.
 
 ### 9.6 Cost estimates (`config/pricing.yaml`)
 These formulas are used only for **pre-call estimates** and for calls with no
@@ -952,6 +959,8 @@ POST /api/units/{id}/replan           POST /api/units/approve-remaining
 | `stickman library list` | Lists the library characters, flagging any with an outdated style version |
 
 Exit codes: `0` success; `1` user or validation error; `2` a pause (budget, daily limit, circuit breaker, waiting for approval); `3` an auth or config error.
+
+**[M2] `new` and `replan`:** `new` refuses to run when the project already has a `plan.yaml`. If planning stopped (daily limit or a failure), running the same `new` command again continues from the cached stages. `replan` uses `-p`, or else the most recently modified project. The strict `-p` rule, `--no-review`, opening the review page, prompt-lock detection (§5.1) and stale marking (§10.4) come in M3–M7.
 
 ---
 
