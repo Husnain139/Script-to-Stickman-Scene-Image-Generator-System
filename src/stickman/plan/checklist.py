@@ -24,7 +24,7 @@ NEURON_USD = 0.011 / 1000
 
 
 def _norm(text: str) -> str:
-    return " ".join(text.lower().replace("'", "'").replace("'", "'").split())
+    return " ".join(text.lower().replace("’", "'").replace("‘", "'").split())
 
 
 @dataclass(frozen=True)

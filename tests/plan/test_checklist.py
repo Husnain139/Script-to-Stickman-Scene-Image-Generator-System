@@ -68,3 +68,12 @@ def test_the_report_lists_results_and_tuning_tasks(plan):
     assert "## Mascot rule: 83% of 36 units" in text
     assert "- Units breaking it: 012, 026a, 026b, 027, 028a, 028b" in text
     assert "- Mascot rule: the mascot is wrong in 6 units (012, 026a, 026b, 027, 028a, 028b)." in text
+
+
+def test_curly_apostrophes_still_match(plan):
+    plan.corrections = [
+        c.model_copy(update={"to": "Ju'hoansi".replace("Ju'", "Ju/'")}) if c.from_ == "Zhuansi" else c
+        for c in plan.corrections
+    ]
+    report = evaluate(plan, LINES)
+    assert next(e for e in report.expected if e.source == "Zhuansi").exact is True
