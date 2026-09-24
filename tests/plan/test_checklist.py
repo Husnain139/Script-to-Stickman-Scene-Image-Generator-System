@@ -1,11 +1,11 @@
-import asyncio
+﻿import asyncio
 from pathlib import Path
 
 import pytest
 
 from stickman.ingest.parse import parse_script
 from stickman.ingest.timing import build_timeline
-from stickman.plan.checklist import evaluate, render_markdown
+from stickman.plan.checklist import evaluate, render_markdown, tuning_tasks
 from stickman.plan.models import CharacterRef, Correction
 from stickman.plan.planner import load_planning_context, plan_script
 from stickman.settings import Settings, TimingSettings
@@ -29,9 +29,9 @@ def test_expected_corrections_merges_and_extras(plan):
     assert report.corrections_found == 5
     assert report.other_corrections == []
     assert report.lines_13_14_merged is True
-    assert report.wrongly_merged == []
-    assert report.caveman_entries == ["caveman_group"]
-    assert len(report.caveman_units) == 36
+    assert report.merges_to_judge == []
+    assert report.prehistoric_entries == ["caveman_group"]
+    assert len(report.prehistoric_units) == 36
 
 
 def test_the_mascot_rule_is_scored_per_unit(plan):
@@ -48,15 +48,38 @@ def test_the_mascot_rule_is_scored_per_unit(plan):
 
 
 def test_missing_wrong_and_extra_corrections_are_reported(plan):
+    first, zhuansi = plan.scenes[0], plan.scenes[5]
+    zhuansi.corrected_text = zhuansi.source_text  # left uncorrected
     plan.corrections = [c for c in plan.corrections if c.from_ != "Zhuansi"]
+    first.corrected_text = first.corrected_text.replace("9 at night", "nine at night")
     plan.corrections[0] = plan.corrections[0].model_copy(update={"to": "nine at night"})
     plan.corrections.append(Correction(scene="002", from_="light switch", to="lamp", reason="style"))
     report = evaluate(plan, LINES)
     assert report.corrections_found == 3
     by_source = {e.source: e for e in report.expected}
-    assert by_source["Zhuansi"].found is None
+    assert by_source["Zhuansi"].found is None and by_source["Zhuansi"].exact is False
     assert by_source["90 at night"].found is not None and by_source["90 at night"].exact is False
     assert [c.from_ for c in report.other_corrections] == ["light switch"]
+
+
+def test_a_shorter_correction_with_the_expected_result_counts(plan):
+    plan.corrections[0] = plan.corrections[0].model_copy(update={"from_": "90", "to": "9"})
+    report = evaluate(plan, LINES)
+    assert report.expected[0].exact is True
+    assert report.expected[0].found.from_ == "90"
+    assert report.other_corrections == []
+
+
+def test_merges_the_rules_did_not_flag_are_listed_for_judgement(plan):
+    plan.scenes[1].lines = [2, 3]
+    report = evaluate(plan, LINES)
+    assert report.merges_to_judge == ["002 (lines 2, 3)"]
+    assert not any(task.startswith("Merges") for task in tuning_tasks(report))
+
+
+def test_an_early_humans_entry_counts_as_the_prehistoric_group(plan):
+    plan.cast[1] = plan.cast[1].model_copy(update={"id": "early_humans", "name": "Early humans"})
+    assert evaluate(plan, LINES).prehistoric_entries == ["early_humans"]
 
 
 def test_the_report_lists_results_and_tuning_tasks(plan):
@@ -68,11 +91,15 @@ def test_the_report_lists_results_and_tuning_tasks(plan):
     assert "## Mascot rule: 83% of 36 units" in text
     assert "- Units breaking it: 012, 026a, 026b, 027, 028a, 028b" in text
     assert "- Mascot rule: the mascot is wrong in 6 units (012, 026a, 026b, 027, 028a, 028b)." in text
+    assert "- Merges the fragment rules didn't flag (judge by hand): none" in text
+    assert "- Prehistoric-people cast entries: caveman_group" in text
 
 
 def test_curly_apostrophes_still_match(plan):
     curly = "Ju/\u2019hoansi"
     assert "\u2019" in curly  # guards against the escape being lost
-    plan.corrections = [c.model_copy(update={"to": curly}) if c.from_ == "Zhuansi" else c for c in plan.corrections]
+    scene = plan.scenes[5]
+    scene.corrected_text = scene.corrected_text.replace("Ju/'hoansi", curly)
+    assert curly in scene.corrected_text
     report = evaluate(plan, LINES)
     assert next(e for e in report.expected if e.source == "Zhuansi").exact is True
