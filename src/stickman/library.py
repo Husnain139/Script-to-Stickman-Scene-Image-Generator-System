@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -10,6 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from stickman.config_files import MascotConfig
+from stickman.plan.models import MASCOT, CastMember, MascotEntry
+from stickman.prompt.builder import ReferenceAvailability
 from stickman.settings import ConfigError
 
 
@@ -45,3 +49,31 @@ def load_library(workspace: Path) -> list[LibraryCharacter]:
             raise ConfigError(f"{path}: id {entry.id!r} must match its folder {path.parent.name!r}")
         entries.append(entry)
     return entries
+
+
+def find_references(
+    workspace: Path,
+    *,
+    use_references: bool,
+    style_version: int,
+    mascot: MascotConfig,
+    cast: Sequence[MascotEntry | CastMember],
+    library: Sequence[LibraryCharacter],
+) -> ReferenceAvailability:
+    """Which approved reference images exist for this style version (spec §7.4, §8.3)."""
+    anchor = workspace / "library" / "style" / f"anchor_v{style_version}_ref.png"
+    if not use_references or not anchor.is_file():
+        return ReferenceAvailability()
+    sheets: set[str] = set()
+    if mascot.seed is not None and mascot.style_version == style_version and (workspace / mascot.ref).is_file():
+        sheets.add(MASCOT)
+    entries = {entry.id: entry for entry in library}
+    for member in cast:
+        if not isinstance(member, CastMember) or member.library_ref is None:
+            continue
+        entry = entries.get(member.library_ref)
+        if entry is None or entry.style_version != style_version:
+            continue
+        if (workspace / "library" / "characters" / entry.id / entry.ref).is_file():
+            sheets.add(member.id)
+    return ReferenceAvailability(anchor=True, sheets=frozenset(sheets))
