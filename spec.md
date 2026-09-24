@@ -425,13 +425,18 @@ Return ONLY JSON matching the provided schema. Tasks:
 
 2. CORRECTIONS — Fix only obvious speech-to-text errors that would change what should be drawn or
    shown in captions: impossible numbers ("90 at night" → "9 at night"), misheard names and terms.
+   A wrong number is replaced by the right number, never by a word. A misheard name is replaced by the
+   real name in its standard spelling (keep special characters), never by a different or broader name.
+   Number-word mix-ups count as misheard terms ("the 2 half" → "the second half").
    If unsure, do not correct. Never rephrase or improve style. Corrections apply to GROUPS: a
    group's text is its lines joined with one space, so a correction may span a line break
    ("Roger E. Kirch" → "Roger Ekirch"). For each correction
    give "line" (the number of the line where the "from" text starts), the exact "from" text as it
    appears in that line's group text, the "to" text and a short reason.
 
-3. CAST — List the recurring or important NON-mascot characters (people or groups). The mascot
+3. CAST — List the recurring or important NON-mascot characters (people or groups), including people
+   or groups the pictures will need even when a line only implies them (for example the people living
+   in the time or place a line describes). The mascot
    ("mascot") is a fixed everyman character that is NOT listed here. For each: id (snake_case),
    name, figures (how many stick figures), and a 1–2 sentence visual description using BIG, SIMPLE,
    drawable features only: one clothing item, a hair shape, one accessory (beard, glasses, hat, book).
