@@ -1,0 +1,84 @@
+import asyncio
+from datetime import date
+
+import pytest
+
+from stickman.ingest.models import TimedLine
+from stickman.library import LibraryCharacter
+from stickman.plan.analyse import AnalyseResult, analyse, analyse_user_message, check_analyse, format_clock
+
+LINES = [
+    TimedLine(1, 0.0, 2.0, "It's 90 at night."),
+    TimedLine(2, 2.0, 6.0, "Historian Roger E."),
+    TimedLine(3, 6.0, 13.0, "Kirch went digging through diaries."),
+]
+LIBRARY = [
+    LibraryCharacter(
+        id="cavemen_v1", name="Caveman group", figures=3, description="three cavemen", tags=["fire"],
+        style_version=1, model="@cf/black-forest-labs/flux-2-klein-9b", sheet="sheet.png", ref="ref.png",
+        approved=date(2026, 9, 22),
+    )
+]
+HISTORIAN = {"id": "historian", "name": "Historian", "figures": 1, "description": "a stickman with round glasses", "library_ref": None}
+
+
+def result(**overrides):
+    data = {
+        "groups": [[1], [2, 3]],
+        "corrections": [{"group": 2, "from": "Roger E. Kirch", "to": "Roger Ekirch", "reason": "name split by speech-to-text"}],
+        "cast": [HISTORIAN],
+    }
+    data.update(overrides)
+    return AnalyseResult.model_validate(data)
+
+
+def test_user_message_format():
+    assert analyse_user_message(LINES, [2], LIBRARY) == (
+        "LINES\n"
+        "[1] 0:00 (2.0 s, 4 words) It's 90 at night.\n"
+        "[2] 0:02 (4.0 s, 3 words) Historian Roger E.\n"
+        "[3] 0:06 (7.0 s, 5 words) Kirch went digging through diaries.\n"
+        "HINTS: [2]\n"
+        'LIBRARY: [{"id": "cavemen_v1", "name": "Caveman group", "figures": 3, "description": "three cavemen", "tags": ["fire"]}]'
+    )
+
+
+def test_format_clock():
+    assert [format_clock(s) for s in (0, 61.0, 125.9, 3725)] == ["0:00", "1:01", "2:05", "1:02:05"]
+
+
+def test_a_valid_result_passes():
+    assert check_analyse(result(), LINES, max_lines=3, library_ids=set()) == []
+
+
+@pytest.mark.parametrize(
+    "overrides, expected",
+    [
+        ({"groups": [[1], [3]]}, "groups:"),
+        ({"corrections": [{"group": 5, "from": "x", "to": "y", "reason": "r"}]}, "corrections[0].group"),
+        ({"corrections": [{"group": 1, "from": "Roger E. Kirch", "to": "Roger Ekirch", "reason": "r"}]}, "corrections[0].from"),
+        ({"cast": [{**HISTORIAN, "id": "mascot"}]}, "cast[0].id"),
+        ({"cast": [{**HISTORIAN, "id": "Historian"}]}, "cast[0].id"),
+        ({"cast": [HISTORIAN, HISTORIAN]}, "cast: duplicate"),
+        ({"cast": [{**HISTORIAN, "library_ref": "nope"}]}, "cast[0].library_ref"),
+    ],
+)
+def test_stage_checks(overrides, expected):
+    errors = check_analyse(result(**overrides), LINES, max_lines=3, library_ids={"cavemen_v1"})
+    assert any(error.startswith(expected) for error in errors), errors
+
+
+def test_groups_longer_than_max_lines_fail():
+    errors = check_analyse(result(groups=[[1, 2, 3]], corrections=[]), LINES, max_lines=2, library_ids=set())
+    assert errors[0].startswith("groups:")
+
+
+def test_analyse_sends_the_prompt_hints_and_library(fake_chat, stage_runner):
+    chat = fake_chat([result().model_dump_json(by_alias=True)])
+    got = asyncio.run(analyse(stage_runner(chat), LINES, hints=[2], library=LIBRARY, max_lines=3))
+    assert got == result()
+    system, user = chat.calls[0]["messages"]
+    assert system["content"].startswith("You plan illustrations for a stickman explainer video.")
+    assert "max 3 lines per group" in system["content"]
+    assert "MASCOT RULE: the mascot appears only" in system["content"]
+    assert "HINTS: [2]" in user["content"]
