@@ -48,9 +48,6 @@ def merge_check(
     lines: Sequence[TimedLine], hints: Collection[int], groups: Sequence[Sequence[int]]
 ) -> list[MergeCheck]:
     """Lines where the fragment rules and the LLM's grouping disagree (informational only)."""
-    # If the last line is in hints, it can't merge anyway, so ignore the hint
-    if lines and lines[-1].number in hints:
-        return []
     merged_with_next = {number for group in groups for number in group[:-1]}
     checks = []
     for line in lines[:-1]:
