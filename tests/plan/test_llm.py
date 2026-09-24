@@ -159,3 +159,11 @@ def test_a_cut_off_reply_is_retried_with_a_clear_error(fake_chat, stage_runner, 
 def test_a_complete_answer_is_kept_even_if_the_reply_was_cut_off_after_it(fake_chat, stage_runner):
     chat = fake_chat([cut_off(GOOD + " and then some")])
     assert run(stage_runner(chat), request()).legs == 4
+
+
+def test_a_complete_but_wrong_answer_keeps_its_real_errors_when_cut_off(fake_chat, stage_runner):
+    chat = fake_chat([cut_off('{"animal": "spider", "legs": 8}'), GOOD])
+    assert run(stage_runner(chat), request(four_legs)).legs == 4
+    feedback = chat.calls[1]["messages"][3]["content"]
+    assert "legs: expected 4, got 8" in feedback
+    assert CUT_OFF_ERROR not in feedback

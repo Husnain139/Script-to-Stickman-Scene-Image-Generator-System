@@ -116,9 +116,7 @@ class StageRunner:
             for attempt in (1, 2):
                 reply, latency = await self._call(request, model, messages, response_format, attempt)
                 stop = finish_reason(reply)
-                result, errors = self._parse(request, reply.text)
-                if result is None and stop == "length":
-                    errors = [CUT_OFF_ERROR]
+                result, errors = self._parse(request, reply.text, stop=stop)
                 self._log.write(
                     kind="llm",
                     stage=request.stage,
@@ -182,11 +180,13 @@ class StageRunner:
             raise
         return reply, time.perf_counter() - started
 
-    def _parse(self, request: StageRequest[M], text: str) -> tuple[M | None, list[str]]:
+    def _parse(
+        self, request: StageRequest[M], text: str, *, stop: str | None = None
+    ) -> tuple[M | None, list[str]]:
         try:
             data = extract_json(text)
         except NoJSONError as exc:
-            return None, [str(exc)]
+            return None, [CUT_OFF_ERROR] if stop == "length" else [str(exc)]
         return self._validate(request, data)
 
     def _validate(self, request: StageRequest[M], data: Any) -> tuple[M | None, list[str]]:
