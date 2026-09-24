@@ -1,4 +1,4 @@
-﻿"""The M2 planning checklist for the sample script (spec §17). A report, not a strict test.
+"""The M2 planning checklist for the sample script (spec §17). A report, not a strict test.
 
 An expected correction counts when the scene holding the expected text ends up with the expected
 corrected text, however short the model's "from" text was. Other corrections, and merges the
@@ -19,7 +19,7 @@ EXPECTED_CORRECTIONS: tuple[tuple[str, str], ...] = (
     ("Roger E. Kirch", "Roger Ekirch"),
     ("Thomas Ware", "Thomas Wehr"),
     ("2 sleep", "second sleep"),
-    ("Zhuansi", "Ju/\u2019hoansi"),
+    ("Zhuansi", "Ju/'hoansi"),
 )
 MASCOT_LINE_STARTS = (58.0, 117.0, 124.0, 126.0)  # 0:58, 1:57, 2:04, 2:06: the mascot should appear
 HISTORICAL_RANGES = ((0.0, 52.0), (61.0, 114.0))  # lines starting 0:00–0:52 and 1:01–1:54: no mascot
@@ -30,7 +30,7 @@ NEURON_USD = 0.011 / 1000
 
 
 def _norm(text: str) -> str:
-    return " ".join(text.lower().replace("\u2019", "'").replace("\u2019", "'").split())
+    return " ".join(text.lower().replace("\u2019", "'").replace("\u2018", "'").split())
 
 
 def _overlaps(a: str, b: str) -> bool:

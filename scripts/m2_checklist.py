@@ -64,7 +64,7 @@ def main() -> int:
     )
     print(
         f"corrections {report.corrections_found}/5 · lines 13+14 merged: {report.lines_13_14_merged} · "
-        f"wrong merges: {len(report.wrongly_merged)} · mascot {report.mascot_score:.0%} · target met: {report.meets_target}"
+        f"merges to judge: {len(report.merges_to_judge)} · mascot {report.mascot_score:.0%} · target met: {report.meets_target}"
     )
     print(f"report: {REPORT}")
     return 0 if report.meets_target else 1
