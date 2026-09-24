@@ -4,8 +4,9 @@ import json
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from stickman.cf.client import LLMResult
 from stickman.cf.errors import CFError, ErrorCategory
-from stickman.plan.llm import STAGE_MAX_TOKENS, PlanningError, StageRequest
+from stickman.plan.llm import CUT_OFF_ERROR, STAGE_MAX_TOKENS, PlanningError, StageRequest
 from stickman.settings import LLMSettings
 
 LLM = LLMSettings()
@@ -139,3 +140,22 @@ def test_a_cloudflare_error_is_logged_with_its_prompt(fake_chat, stage_runner, t
     assert entries[0]["ok"] is False
     assert entries[0]["error"] == "daily_limit"
     assert entries[0]["prompt"] == "USER"
+
+
+def cut_off(text):
+    return LLMResult(text=text, input_tokens=10, output_tokens=5, raw={"choices": [{"finish_reason": "length"}]}, neurons=1.5)
+
+
+def test_a_cut_off_reply_is_retried_with_a_clear_error(fake_chat, stage_runner, tmp_path):
+    log_path = tmp_path / "run.jsonl"
+    chat = fake_chat([cut_off('{"animal": "dog", "le'), GOOD])
+    assert run(stage_runner(chat, log_path=log_path), request()).legs == 4
+    assert f"- {CUT_OFF_ERROR}" in chat.calls[1]["messages"][3]["content"]
+    first, second = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert (first["finish_reason"], first["reply_chars"], first["errors"]) == ("length", 21, [CUT_OFF_ERROR])
+    assert (second["finish_reason"], second["reply_chars"]) == (None, len(GOOD))
+
+
+def test_a_complete_answer_is_kept_even_if_the_reply_was_cut_off_after_it(fake_chat, stage_runner):
+    chat = fake_chat([cut_off(GOOD + " and then some")])
+    assert run(stage_runner(chat), request()).legs == 4

@@ -19,8 +19,8 @@ class _Reply(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
-class GroupCorrection(_Reply):
-    group: int
+class LineCorrection(_Reply):
+    line: int
     from_: str = Field(alias="from", min_length=1)
     to: str
     reason: str = ""
@@ -36,7 +36,7 @@ class ProposedCastMember(_Reply):
 
 class AnalyseResult(_Reply):
     groups: list[list[int]]
-    corrections: list[GroupCorrection] = Field(default_factory=list)
+    corrections: list[LineCorrection] = Field(default_factory=list)
     cast: list[ProposedCastMember] = Field(default_factory=list)
 
 
@@ -83,13 +83,15 @@ def check_analyse(
         return [f"groups: {exc}"]  # corrections refer to groups, so check them once groups are valid
     errors = []
     texts = group_texts(lines, result.groups)
+    group_of = {number: index for index, group in enumerate(result.groups) for number in group}
     for index, correction in enumerate(result.corrections):
-        if not 1 <= correction.group <= len(texts):
-            errors.append(f"corrections[{index}].group: {correction.group} is not a group number (1..{len(texts)})")
-        elif correction.from_ not in texts[correction.group - 1]:
+        position = group_of.get(correction.line)
+        if position is None:
+            errors.append(f"corrections[{index}].line: {correction.line} is not a line number")
+        elif correction.from_ not in texts[position]:
             errors.append(
-                f'corrections[{index}].from: "{correction.from_}" does not occur in group '
-                f'{correction.group}: "{texts[correction.group - 1]}"'
+                f'corrections[{index}].from: "{correction.from_}" does not occur in the text of the group '
+                f'holding line {correction.line}: "{texts[position]}"'
             )
     ids = [member.id for member in result.cast]
     duplicates = sorted({i for i in ids if ids.count(i) > 1})

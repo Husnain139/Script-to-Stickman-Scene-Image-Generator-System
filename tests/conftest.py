@@ -47,6 +47,8 @@ class FakeChat:
             raise AssertionError("FakeChat: more calls than scripted replies")
         if isinstance(reply, BaseException):
             raise reply
+        if isinstance(reply, LLMResult):
+            return reply
         return LLMResult(text=reply, input_tokens=10, output_tokens=5, raw={}, neurons=1.5)
 
 
@@ -134,12 +136,12 @@ def plan_data():
 
 
 SAMPLE_GROUPS = [[n] for n in range(1, 13)] + [[13, 14]] + [[n] for n in range(15, 30)]
-SAMPLE_CORRECTIONS = [  # group numbers: lines 1–12 are groups 1–12, [13, 14] is 13, line n ≥ 15 is n − 1
-    {"group": 1, "from": "90 at night", "to": "9 at night", "reason": "impossible clock time"},
-    {"group": 6, "from": "Zhuansi", "to": "Ju/'hoansi", "reason": "misheard name"},
-    {"group": 13, "from": "Roger E. Kirch", "to": "Roger Ekirch", "reason": "name split by speech-to-text"},
-    {"group": 14, "from": "2 sleep", "to": "second sleep", "reason": "misheard term"},
-    {"group": 23, "from": "Thomas Ware", "to": "Thomas Wehr", "reason": "misheard name"},
+SAMPLE_CORRECTIONS = [
+    {"line": 1, "from": "90 at night", "to": "9 at night", "reason": "impossible clock time"},
+    {"line": 6, "from": "Zhuansi", "to": "Ju/'hoansi", "reason": "misheard name"},
+    {"line": 13, "from": "Roger E. Kirch", "to": "Roger Ekirch", "reason": "name split by speech-to-text"},
+    {"line": 15, "from": "2 sleep", "to": "second sleep", "reason": "misheard term"},
+    {"line": 24, "from": "Thomas Ware", "to": "Thomas Wehr", "reason": "misheard name"},
 ]
 SAMPLE_CAST = [
     {"id": "caveman_group", "name": "Caveman group", "figures": 3,

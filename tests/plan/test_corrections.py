@@ -1,5 +1,5 @@
 from stickman.ingest.models import TimedLine
-from stickman.plan.analyse import GroupCorrection, group_texts
+from stickman.plan.analyse import LineCorrection, group_texts
 from stickman.plan.corrections import apply_corrections, correct_scenes, merge_check
 from stickman.plan.models import MergeCheck
 from stickman.split.scenes import build_scenes, merge_short_scenes
@@ -12,9 +12,9 @@ LINES = [
 ]
 GROUPS = [[1], [2, 3], [4]]
 FIXES = [
-    GroupCorrection(group=1, from_="90 at night", to="9 at night", reason="clock"),
-    GroupCorrection(group=2, from_="Roger E. Kirch", to="Roger Ekirch", reason="name"),
-    GroupCorrection(group=3, from_="2 sleep", to="second sleep", reason="term"),
+    LineCorrection(line=1, from_="90 at night", to="9 at night", reason="clock"),
+    LineCorrection(line=2, from_="Roger E. Kirch", to="Roger Ekirch", reason="name"),
+    LineCorrection(line=4, from_="2 sleep", to="second sleep", reason="term"),
 ]
 
 
@@ -24,7 +24,7 @@ def test_apply_corrections_replaces_the_first_occurrence_in_order():
 
 def test_corrections_apply_at_scene_level_across_a_line_break():
     scenes = build_scenes(LINES, GROUPS, max_lines=3)
-    corrected, stored = correct_scenes(scenes, group_texts(LINES, GROUPS), FIXES)
+    corrected, stored = correct_scenes(scenes, GROUPS, group_texts(LINES, GROUPS), FIXES)
     assert corrected == {
         1: "It's 9 at night.",
         2: "Historian Roger Ekirch went digging.",
@@ -39,7 +39,7 @@ def test_corrections_apply_at_scene_level_across_a_line_break():
 
 def test_corrections_follow_scenes_merged_for_being_short():
     scenes = merge_short_scenes(build_scenes(LINES, GROUPS, max_lines=3), min_scene_seconds=1.5, max_lines=3)
-    corrected, stored = correct_scenes(scenes, group_texts(LINES, GROUPS), FIXES)
+    corrected, stored = correct_scenes(scenes, GROUPS, group_texts(LINES, GROUPS), FIXES)
     assert corrected == {1: "It's 9 at night.", 2: "Historian Roger Ekirch went digging. First sleep, second sleep."}
     assert [c.scene for c in stored] == ["001", "002", "002"]
 
@@ -53,3 +53,11 @@ def test_merge_check_lists_disagreements_only():
 
 def test_a_hinted_last_line_does_not_hide_other_disagreements():
     assert merge_check(LINES, [2, 4], [[1], [2], [3], [4]]) == [MergeCheck(line=2, rules="merge", llm="separate")]
+
+
+def test_a_correction_on_the_second_line_of_a_group_lands_in_that_group():
+    scenes = build_scenes(LINES, GROUPS, max_lines=3)
+    fix = [LineCorrection(line=3, from_="digging", to="searching", reason="test")]
+    corrected, stored = correct_scenes(scenes, GROUPS, group_texts(LINES, GROUPS), fix)
+    assert corrected[2] == "Historian Roger E. Kirch went searching."
+    assert [c.scene for c in stored] == ["002"]

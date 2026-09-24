@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Collection, Sequence
 
 from stickman.ingest.models import TimedLine
-from stickman.plan.analyse import GroupCorrection
+from stickman.plan.analyse import LineCorrection
 from stickman.plan.models import Correction, MergeCheck
 from stickman.split.scenes import Scene
 
@@ -18,16 +18,21 @@ def apply_corrections(text: str, pairs: Sequence[tuple[str, str]]) -> str:
 
 
 def correct_scenes(
-    scenes: Sequence[Scene], texts: Sequence[str], corrections: Sequence[GroupCorrection]
+    scenes: Sequence[Scene],
+    groups: Sequence[Sequence[int]],
+    texts: Sequence[str],
+    corrections: Sequence[LineCorrection],
 ) -> tuple[dict[int, str], list[Correction]]:
     """Each scene's corrected text, and its corrections keyed by scene ID.
 
-    Corrections are applied per group, then the groups are joined. So a correction still
+    A correction names the line where its text starts; it belongs to the group holding that
+    line. Corrections are applied per group, then the groups are joined, so a correction still
     lands in the right place after short-scene merging has combined groups (§4.4).
     """
-    by_group: dict[int, list[GroupCorrection]] = {}
+    group_of = {number: position for position, group in enumerate(groups, 1) for number in group}
+    by_group: dict[int, list[LineCorrection]] = {}
     for correction in corrections:
-        by_group.setdefault(correction.group, []).append(correction)
+        by_group.setdefault(group_of[correction.line], []).append(correction)
     corrected: dict[int, str] = {}
     stored: list[Correction] = []
     for scene in scenes:

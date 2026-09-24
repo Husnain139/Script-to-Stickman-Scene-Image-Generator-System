@@ -134,7 +134,9 @@ async def plan_script(
         min_scene_seconds=s.merge.min_scene_seconds,
         max_lines=s.merge.max_lines,
     )
-    corrected, corrections = correct_scenes(scenes, group_texts(timeline.lines, analysed.groups), analysed.corrections)
+    corrected, corrections = correct_scenes(
+        scenes, analysed.groups, group_texts(timeline.lines, analysed.groups), analysed.corrections
+    )
     candidates = await cut_candidates(runner, scenes, s.split)
     decisions = {scene.number: decide_split(scene, candidates.get(scene.number, []), s.split) for scene in scenes}
     units = build_units(scenes, decisions)

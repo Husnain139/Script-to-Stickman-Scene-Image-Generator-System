@@ -21,8 +21,9 @@ Return ONLY JSON matching the provided schema. Tasks:
    shown in captions: impossible numbers ("90 at night" → "9 at night"), misheard names and terms.
    If unsure, do not correct. Never rephrase or improve style. Corrections apply to GROUPS: a
    group's text is its lines joined with one space, so a correction may span a line break
-   ("Roger E. Kirch" → "Roger Ekirch"). Give the group number (1-based position in your "groups"
-   list), the exact "from" text as it appears in the group text, the "to" text and a short reason.
+   ("Roger E. Kirch" → "Roger Ekirch"). For each correction
+   give "line" (the number of the line where the "from" text starts), the exact "from" text as it
+   appears in that line's group text, the "to" text and a short reason.
 
 3. CAST — List the recurring or important NON-mascot characters (people or groups). The mascot
    ("mascot") is a fixed everyman character that is NOT listed here. For each: id (snake_case),

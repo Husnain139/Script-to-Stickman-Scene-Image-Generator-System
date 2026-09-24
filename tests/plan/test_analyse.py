@@ -25,7 +25,7 @@ HISTORIAN = {"id": "historian", "name": "Historian", "figures": 1, "description"
 def result(**overrides):
     data = {
         "groups": [[1], [2, 3]],
-        "corrections": [{"group": 2, "from": "Roger E. Kirch", "to": "Roger Ekirch", "reason": "name split by speech-to-text"}],
+        "corrections": [{"line": 2, "from": "Roger E. Kirch", "to": "Roger Ekirch", "reason": "name split by speech-to-text"}],
         "cast": [HISTORIAN],
     }
     data.update(overrides)
@@ -55,8 +55,8 @@ def test_a_valid_result_passes():
     "overrides, expected",
     [
         ({"groups": [[1], [3]]}, "groups:"),
-        ({"corrections": [{"group": 5, "from": "x", "to": "y", "reason": "r"}]}, "corrections[0].group"),
-        ({"corrections": [{"group": 1, "from": "Roger E. Kirch", "to": "Roger Ekirch", "reason": "r"}]}, "corrections[0].from"),
+        ({"corrections": [{"line": 9, "from": "x", "to": "y", "reason": "r"}]}, "corrections[0].line"),
+        ({"corrections": [{"line": 1, "from": "Roger E. Kirch", "to": "Roger Ekirch", "reason": "r"}]}, "corrections[0].from"),
         ({"cast": [{**HISTORIAN, "id": "mascot"}]}, "cast[0].id"),
         ({"cast": [{**HISTORIAN, "id": "Historian"}]}, "cast[0].id"),
         ({"cast": [HISTORIAN, HISTORIAN]}, "cast: duplicate"),
@@ -82,3 +82,16 @@ def test_analyse_sends_the_prompt_hints_and_library(fake_chat, stage_runner):
     assert "max 3 lines per group" in system["content"]
     assert "MASCOT RULE: the mascot appears only" in system["content"]
     assert "HINTS: [2]" in user["content"]
+
+
+def test_a_correction_may_name_any_line_of_its_group():
+    later_line = {"line": 3, "from": "Roger E. Kirch", "to": "Roger Ekirch", "reason": "name split by speech-to-text"}
+    assert check_analyse(result(corrections=[later_line]), LINES, max_lines=3, library_ids=set()) == []
+
+
+def test_the_prompt_asks_for_line_numbers():
+    from stickman.plan.prompts import analyse_system
+
+    text = analyse_system(3)
+    assert 'give "line" (the number of the line where the "from" text starts)' in text
+    assert "1-based position" not in text

@@ -23,9 +23,22 @@ from stickman.settings import LLMSettings, RetrySettings
 
 M = TypeVar("M", bound=BaseModel)
 
-STAGE_MAX_TOKENS = 8192  # gpt-oss spends part of this on reasoning
+STAGE_MAX_TOKENS = 16384  # gpt-oss spends part of this on reasoning; only used tokens are billed
 RETRY_MESSAGE = "Your previous JSON had these errors:\n{errors}\nReturn corrected JSON only."
 PREVIOUS_REPLY_CHARS = 6000
+
+CUT_OFF_ERROR = (
+    "the reply was cut off at the token limit before the JSON was complete; "
+    "answer with the JSON directly and keep any reasoning short"
+)
+
+
+def finish_reason(reply: LLMResult) -> str | None:
+    """Why the model stopped ("stop", "length", …), when the response says so."""
+    try:
+        return reply.raw["choices"][0].get("finish_reason")
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return None
 
 
 class ChatClient(Protocol):
@@ -102,7 +115,10 @@ class StageRunner:
             messages = base
             for attempt in (1, 2):
                 reply, latency = await self._call(request, model, messages, response_format, attempt)
+                stop = finish_reason(reply)
                 result, errors = self._parse(request, reply.text)
+                if result is None and stop == "length":
+                    errors = [CUT_OFF_ERROR]
                 self._log.write(
                     kind="llm",
                     stage=request.stage,
@@ -110,6 +126,8 @@ class StageRunner:
                     attempt=attempt,
                     ok=result is not None,
                     errors=errors,
+                    finish_reason=stop,
+                    reply_chars=len(reply.text),
                     latency_s=round(latency, 2),
                     input_tokens=reply.input_tokens,
                     output_tokens=reply.output_tokens,

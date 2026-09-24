@@ -427,8 +427,9 @@ Return ONLY JSON matching the provided schema. Tasks:
    shown in captions: impossible numbers ("90 at night" → "9 at night"), misheard names and terms.
    If unsure, do not correct. Never rephrase or improve style. Corrections apply to GROUPS: a
    group's text is its lines joined with one space, so a correction may span a line break
-   ("Roger E. Kirch" → "Roger Ekirch"). Give the group number (1-based position in your "groups"
-   list), the exact "from" text as it appears in the group text, the "to" text and a short reason.
+   ("Roger E. Kirch" → "Roger Ekirch"). For each correction
+   give "line" (the number of the line where the "from" text starts), the exact "from" text as it
+   appears in that line's group text, the "to" text and a short reason.
 
 3. CAST — List the recurring or important NON-mascot characters (people or groups). The mascot
    ("mascot") is a fixed everyman character that is NOT listed here. For each: id (snake_case),
@@ -443,7 +444,9 @@ human experience. Historical, scientific or third-person scenes use cast charact
 ```
 **User message:** a `LINES` block with `[n] M:SS (d.s s, w words) text` per line, then `HINTS: [line numbers]`, then `LIBRARY: [{id, name, figures, description, tags}]`.
 
-**Schema:** `{groups: [[int]], corrections: [{group, from, to, reason}], cast: [{id, name, figures, description, library_ref|null}]}`
+**Schema:** `{groups: [[int]], corrections: [{line, from, to, reason}], cast: [{id, name, figures, description, library_ref|null}]}`
+
+**[M2]** Corrections name a line, not a group position: in the live run the model confused group positions with line numbers once lines 13 and 14 had merged. The code maps the line to its group.
 
 **Applying corrections (code, not the LLM):**
 - Corrections are applied at **scene level, after grouping**. Each scene's `corrected_text` is its `source_text` with every correction for that scene replaced, first occurrence only, in the order given.
@@ -452,7 +455,7 @@ human experience. Historical, scientific or third-person scenes use cast charact
 
 **Stage checks:**
 - The groups are valid (§4.4).
-- Each correction's `group` exists, and its `from` text occurs in that group's merged text (lines joined with one space).
+- Each correction's `line` exists, and its `from` text occurs in the merged text of the group holding that line (lines joined with one space).
 - Cast IDs are unique and don't equal `mascot`.
 - Each `library_ref` exists.
 
