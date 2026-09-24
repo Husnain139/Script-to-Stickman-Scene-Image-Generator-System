@@ -71,9 +71,8 @@ def test_the_report_lists_results_and_tuning_tasks(plan):
 
 
 def test_curly_apostrophes_still_match(plan):
-    plan.corrections = [
-        c.model_copy(update={"to": "Ju'hoansi".replace("Ju'", "Ju/'")}) if c.from_ == "Zhuansi" else c
-        for c in plan.corrections
-    ]
+    curly = "Ju/\u2019hoansi"
+    assert "\u2019" in curly  # guards against the escape being lost
+    plan.corrections = [c.model_copy(update={"to": curly}) if c.from_ == "Zhuansi" else c for c in plan.corrections]
     report = evaluate(plan, LINES)
     assert next(e for e in report.expected if e.source == "Zhuansi").exact is True
