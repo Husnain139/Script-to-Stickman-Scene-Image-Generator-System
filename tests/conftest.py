@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from stickman.cf.client import LLMResult
@@ -129,3 +131,69 @@ def plan_data():
             },
         ],
     }
+
+
+SAMPLE_GROUPS = [[n] for n in range(1, 13)] + [[13, 14]] + [[n] for n in range(15, 30)]
+SAMPLE_CORRECTIONS = [  # group numbers: lines 1–12 are groups 1–12, [13, 14] is 13, line n ≥ 15 is n − 1
+    {"group": 1, "from": "90 at night", "to": "9 at night", "reason": "impossible clock time"},
+    {"group": 6, "from": "Zhuansi", "to": "Ju/'hoansi", "reason": "misheard name"},
+    {"group": 13, "from": "Roger E. Kirch", "to": "Roger Ekirch", "reason": "name split by speech-to-text"},
+    {"group": 14, "from": "2 sleep", "to": "second sleep", "reason": "misheard term"},
+    {"group": 23, "from": "Thomas Ware", "to": "Thomas Wehr", "reason": "misheard name"},
+]
+SAMPLE_CAST = [
+    {"id": "caveman_group", "name": "Caveman group", "figures": 3,
+     "description": "a group of three cavemen stickmen in fur loincloths", "library_ref": None},
+    {"id": "historian", "name": "Historian", "figures": 1,
+     "description": "a stickman historian with round glasses and a book", "library_ref": None},
+]
+SAMPLE_CANDIDATES = {"005": [6, 15], "006": [7], "008": [10], "013": [13], "015": [11],
+                     "023": [10], "024": [19], "026": [12], "028": [6, 9]}
+
+
+def _sample_cut(user):
+    scenes = []
+    for block in user.split("\n\n"):
+        rows = block.splitlines()
+        scene_id = rows[0][len("id: "):]
+        n = len(rows[2].split()) - 1  # "words: 1:a 2:b ..."
+        candidates = SAMPLE_CANDIDATES.get(scene_id, [])
+        if not all(1 <= k <= n - 1 for k in candidates):
+            candidates = [n // 2]
+        scenes.append({"id": scene_id, "candidates": candidates})
+    return {"scenes": scenes}
+
+
+def _sample_design(unit):
+    text = unit["source_text"] if unit["source_text"] in unit["scene_corrected_text"] else unit["scene_corrected_text"]
+    return {
+        "id": unit["id"], "corrected_text": text, "visual_idea": f"Idea for {unit['id']}",
+        "visual_type": "literal", "shot": "wide", "time_of_day": "night",
+        "characters": [{"ref": "caveman_group", "action": "sitting by the fire", "emotion": "calm"}],
+        "mood": None, "setting": ["flat ground line"], "props": ["small campfire"],
+        "composition": "figures centred, big white sky", "energy_marks": [],
+        "softened": False, "softened_reason": None,
+    }
+
+
+def _sample_reply(model, messages):
+    """Plays the planner LLM for tests/fixtures/scripts/first-sleep.txt."""
+    system, user = messages[0]["content"], messages[1]["content"]
+    if system.startswith("You plan illustrations"):
+        return json.dumps({"groups": SAMPLE_GROUPS, "corrections": SAMPLE_CORRECTIONS, "cast": SAMPLE_CAST})
+    if system.startswith("Each scene below"):
+        return json.dumps(_sample_cut(user))
+    if system.startswith("You design one illustration"):
+        line = next(row for row in user.splitlines() if row.startswith("UNITS: "))
+        return json.dumps({"units": [_sample_design(unit) for unit in json.loads(line[len("UNITS: "):])]})
+    raise AssertionError(f"unexpected system prompt: {system[:40]!r}")
+
+
+@pytest.fixture
+def sample_reply():
+    return _sample_reply
+
+
+@pytest.fixture
+def sample_chat():
+    return FakeChat(_sample_reply)
