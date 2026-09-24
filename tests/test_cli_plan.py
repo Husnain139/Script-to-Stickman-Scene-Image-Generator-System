@@ -152,7 +152,9 @@ def test_replan_refuses_when_the_plan_changed_meanwhile(workspace, monkeypatch, 
 
 
 def test_replan_needs_a_project_and_a_known_unit(workspace, monkeypatch, sample_chat):
-    assert replan(workspace, "006a").exit_code == 1  # no projects yet
+    no_project = replan(workspace, "006a")  # no projects yet
+    assert no_project.exit_code == 1
+    assert no_project.output.splitlines()[0] == "Project: (none found)"
     planned(workspace, monkeypatch, sample_chat)
     result = replan(workspace, "999")
     assert result.exit_code == 1

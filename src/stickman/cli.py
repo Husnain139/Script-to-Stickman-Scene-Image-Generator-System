@@ -19,7 +19,14 @@ from stickman.ingest.parse import parse_duration, parse_script
 from stickman.ingest.timing import build_timeline
 from stickman.plan.llm import PlanningError, StageRunner
 from stickman.plan.models import CastMember, PlanValidationError
-from stickman.plan.planner import REPLAN_KEYS, PlanOutcome, load_planning_context, plan_script, replan_unit
+from stickman.plan.planner import (
+    REPLAN_KEYS,
+    PlanningContext,
+    PlanOutcome,
+    load_planning_context,
+    plan_script,
+    replan_unit,
+)
 from stickman.plan.store import PlanChangedError, load_plan, to_document, update_unit, write_plan
 from stickman.project import ProjectError, create_project, project_dir, resolve_project, slugify
 from stickman.runlog import RunLog
@@ -169,6 +176,14 @@ def _run_llm(
         _fail(f"Cloudflare error: {exc}", EXIT_USER_ERROR)
 
 
+def _load_planning(root: Path) -> tuple[AppConfig, PlanningContext]:
+    try:
+        cfg = load_config(root)
+        return cfg, load_planning_context(root, cfg.settings)
+    except ConfigError as exc:
+        _fail(str(exc), EXIT_CONFIG_ERROR)
+
+
 def _print_summary(outcome: PlanOutcome, directory: Path) -> None:
     plan = outcome.plan
     split = sum(1 for scene in plan.scenes if scene.split.status == "split")
@@ -204,11 +219,7 @@ def new(
     console.print(f"Project: {escape(directory.name)}")
     if aspect not in ASPECTS:
         _fail(f'--aspect must be "16:9" or "9:16", not {aspect!r}', EXIT_USER_ERROR)
-    try:
-        cfg = load_config(root)
-        planning = load_planning_context(root, cfg.settings)
-    except ConfigError as exc:
-        _fail(str(exc), EXIT_CONFIG_ERROR)
+    cfg, planning = _load_planning(root)
     try:
         text = script.read_text(encoding="utf-8")
         seconds = parse_duration(duration) if duration is not None else None
@@ -243,13 +254,10 @@ def replan(
     try:
         directory = resolve_project(root, project)
     except ProjectError as exc:
+        console.print("Project: (none found)")
         _fail(str(exc), EXIT_USER_ERROR)
     console.print(f"Project: {escape(directory.name)}")
-    try:
-        cfg = load_config(root)
-        planning = load_planning_context(root, cfg.settings)
-    except ConfigError as exc:
-        _fail(str(exc), EXIT_CONFIG_ERROR)
+    cfg, planning = _load_planning(root)
     path = directory / "plan.yaml"
     try:
         loaded = load_plan(path, library_ids=planning.library_ids)
