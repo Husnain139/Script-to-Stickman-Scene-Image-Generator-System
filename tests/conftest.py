@@ -7,9 +7,10 @@ import functools
 import inspect
 import io
 import json
+import types
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from stickman.cf.client import ImageResult, LLMResult
 from stickman.plan.llm import StageRunner
@@ -24,12 +25,133 @@ def _plain_console(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-@functools.lru_cache
-def jpeg_bytes(width=64, height=36):
-    """A small white JPEG, like the base64 JPEG Klein returns (M0)."""
+DRAWING_SIZE = (960, 544)  # half of 1920x1088
+INK = (0, 0, 0)
+PAPER = (255, 255, 255)
+
+
+def _figure(draw, cx, ground, scale=1.0, *, ink=INK, width=3):
+    """A stick figure standing on `ground`: round head, dot eyes, three hair strokes, line body."""
+    head = 34 * scale
+    neck = ground - 200 * scale
+    hips = ground - 90 * scale
+    draw.ellipse((cx - head, neck - 2 * head, cx + head, neck), outline=ink, width=width)
+    for dx in (-12, 12):
+        draw.ellipse((cx + dx * scale - 3, neck - head - 6, cx + dx * scale + 3, neck - head), fill=ink)
+    for dx in (-8, 0, 8):
+        draw.arc((cx + dx * scale, neck - 2 * head - 18, cx + dx * scale + 18, neck - 2 * head + 4), 180, 300,
+                 fill=ink, width=width)
+    draw.line((cx, neck, cx, hips), fill=ink, width=width)
+    draw.line((cx, neck + 30 * scale, cx - 55 * scale, neck + 90 * scale), fill=ink, width=width)
+    draw.line((cx, neck + 30 * scale, cx + 55 * scale, neck + 70 * scale), fill=ink, width=width)
+    draw.line((cx, hips, cx - 35 * scale, ground - 8), fill=ink, width=width)
+    draw.line((cx, hips, cx + 35 * scale, ground - 8), fill=ink, width=width)
+    for fx in (cx - 35 * scale, cx + 35 * scale):
+        draw.ellipse((fx - 16 * scale, ground - 14, fx + 16 * scale, ground), outline=ink, width=width)
+
+
+def _scene(background=PAPER, ink=INK, size=DRAWING_SIZE):
+    """Two stick figures on a ground line under a small sun: the clean case."""
+    image = Image.new("RGB", size, background)
+    draw = ImageDraw.Draw(image)
+    w, h = size
+    ground = round(h * 0.85)
+    scale = h / DRAWING_SIZE[1]
+    draw.line((round(w * 0.05), ground, round(w * 0.95), ground), fill=ink, width=3)
+    _figure(draw, round(w * 0.35), ground, scale, ink=ink)
+    _figure(draw, round(w * 0.65), ground, scale, ink=ink)
+    sun = (round(w * 0.85), round(h * 0.08))
+    draw.ellipse((*sun, sun[0] + 50 * scale, sun[1] + 50 * scale), outline=ink, width=3)
+    return image, draw
+
+
+def _shoes_and_tie():
+    image, draw = _scene()
+    for cx in (336, 624):
+        draw.polygon([(cx - 8, 330), (cx + 8, 330), (cx + 12, 380), (cx, 392), (cx - 12, 380)], fill=INK)
+        for fx in (cx - 35, cx + 35):
+            draw.ellipse((fx - 18, 448, fx + 18, 464), fill=INK)
+    return image
+
+
+def _with_text():
+    image, draw = _scene()
+    draw.text((80, 40), "THE FIRST SLEEP", fill=INK, font=ImageFont.load_default(size=48))
+    return image
+
+
+def _colour():
+    image, draw = _scene()
+    draw.ellipse((780, 30, 900, 150), fill=(230, 40, 30))
+    return image
+
+
+def _big_black_blob():
+    image, draw = _scene()
+    draw.rectangle((40, 40, 300, 260), fill=INK)
+    return image
+
+
+def _blurred():
+    """Large dark shapes, blurred until no edge is left: what a safety filter's blur looks like."""
+    image = Image.new("RGB", DRAWING_SIZE, PAPER)
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((200, 100, 460, 360), fill=(40, 40, 40))
+    draw.rectangle((560, 150, 820, 470), fill=(40, 40, 40))
+    return image.filter(ImageFilter.GaussianBlur(40))
+
+
+def _almost_empty():
+    image = Image.new("RGB", DRAWING_SIZE, PAPER)
+    draw = ImageDraw.Draw(image)
+    draw.line((100, 460, 300, 460), fill=INK, width=2)
+    draw.line((600, 200, 640, 180), fill=INK, width=2)
+    return image
+
+
+def _uniform(colour):
+    return lambda: Image.new("RGB", DRAWING_SIZE, colour)
+
+
+DRAWINGS = types.SimpleNamespace(
+    clean=lambda size=DRAWING_SIZE: _scene(size=size)[0],
+    shoes_and_tie=_shoes_and_tie,
+    with_text=_with_text,
+    colour=_colour,
+    filled_background=lambda: _scene(background=(120, 120, 120))[0],
+    dark_with_detail=lambda: _scene(background=(10, 10, 10), ink=(255, 255, 255))[0],
+    big_black_blob=_big_black_blob,
+    all_black=_uniform((0, 0, 0)),
+    grey=_uniform((128, 128, 128)),
+    white=_uniform((255, 255, 255)),
+    cream=_uniform((250, 243, 224)),
+    blurred=_blurred,
+    almost_empty=_almost_empty,
+)
+
+
+@pytest.fixture
+def drawings():
+    """Fixture drawings for the pixel checks (spec §17), made in code so each case is exact."""
+    return DRAWINGS
+
+
+def to_jpeg(image, quality=90):
     buffer = io.BytesIO()
-    Image.new("RGB", (width, height), "white").save(buffer, format="JPEG")
+    image.save(buffer, format="JPEG", quality=quality)
     return buffer.getvalue()
+
+
+@functools.lru_cache
+def jpeg_bytes():
+    """A clean stick-figure JPEG, like the base64 JPEG Klein returns (M0). It passes the pixel checks."""
+    return to_jpeg(DRAWINGS.clean())
+
+
+@functools.lru_cache
+def filled_jpeg_bytes():
+    """A grey-background JPEG: it fails the pixel checks as background_filled."""
+    return to_jpeg(DRAWINGS.filled_background())
 
 
 @pytest.fixture

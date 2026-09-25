@@ -67,7 +67,7 @@ def test_every_unit_gets_one_version_its_history_file_and_its_current_image(tmp_
     unit = run.store.unit("002a")
     [version] = unit.versions
     assert (unit.current_version, version.v, version.file) == (1, 1, "images/_history/002a_v1.png")
-    assert (version.seed, version.model, version.width, version.height) == (1001, KLEIN_4B, 64, 36)
+    assert (version.seed, version.model, version.width, version.height) == (1001, KLEIN_4B, 960, 544)
     assert (version.prompt_sent, version.refs, version.fingerprint) == ("prompt for 002a", [], run.jobs[1].fingerprint)
     assert version.est_cost_usd == pytest.approx(IMAGE_USD)
     history = (run.project / version.file).read_bytes()
