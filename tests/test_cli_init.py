@@ -1,4 +1,5 @@
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
 from stickman import cli
@@ -101,3 +102,14 @@ def test_init_error_with_markup_like_text_does_not_crash(tmp_path, monkeypatch):
     result = runner.invoke(cli.app, ["init", "-w", str(tmp_path)])
     assert result.exit_code == 1
     assert "boom" in result.output
+
+
+def test_init_masks_the_secrets_in_a_failed_token_check(tmp_path, monkeypatch):
+    write_env(tmp_path)
+    fake = FakeClient(CFError(ErrorCategory.TRANSIENT, "no route to /accounts/acc123/ai/v1 for tok-secret"))
+    monkeypatch.setattr(cli, "build_client", lambda cfg: fake)
+    monkeypatch.setattr(cli, "console", Console(width=300))  # plain text: no path highlighting, no wrapping
+    result = runner.invoke(cli.app, ["init", "-w", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "/accounts/***/ai/v1 for ***" in result.output
+    assert "acc123" not in result.output and "tok-secret" not in result.output

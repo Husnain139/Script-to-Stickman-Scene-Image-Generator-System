@@ -364,6 +364,18 @@ scenes:
 
 **Safe writes:** write to `state.json.tmp`, call `fsync`, then `os.replace`. If Windows reports the file as locked, retry up to 10 times, 100 ms apart. The state is written after **every** status change, and within one second of each image being saved.
 
+**[M3] Errors, version records and recovery:**
+- Each unit also has `error`: the last API error (`<category>: <message>`, token masked) of a unit that ended `failed`.
+- Each history PNG carries a copy of its version record, as JSON in a `stickman` text chunk.
+- When a run starts, it does these steps in order:
+  1. Temp files are removed.
+  2. `generating` goes back to `planned`.
+  3. A history image that `state.json` doesn't list is added from the copy inside it, and becomes current. This happens when a kill landed between saving the image and saving the state.
+  4. Each current image `images/<unit>_<MM-SS.s>.png` is copied again from its version if it's missing or different.
+  5. Stale units are marked (§10.4).
+- A stale unit whose fingerprint matches again goes back to `approved` if it has an approved version, else to `generated`. From M4 it goes to `needs_review` when its current version failed QC.
+- `qc` stays null until M4.
+
 ### 5.3 Character library entry (`library/characters/<id>/character.yaml`)
 ```yaml
 schema_version: 1
@@ -388,6 +400,11 @@ An entry whose `style_version` is not the current `style.yaml` version is flagge
 ```
 - `kind` is one of `image`, `sheet`, `anchor`, `llm`, `vision`.
 - `billing` is one of `billed`, `possibly_billed` (timeouts), `not_billed` (errors raised before the request was sent).
+- **[M3]** Each entry also has `neurons`: the `cf-ai-neurons` header of a successful call, or null.
+  - A `billed` entry's `est_usd` is that header's cost (§9.7), or the §9.6 estimate when the header is missing.
+  - A timeout is `possibly_billed`, at its estimate.
+  - Any other error response is `not_billed`.
+  - When reading, a torn last line is skipped, and the next entry is still written on a line of its own.
 
 ### 5.5 Manifests
 - `manifest.json` is an array of units: every plan field, plus the state status, approved version file, seed, model, QC result, `softened` and all corrections.
@@ -704,6 +721,7 @@ fields: prompt, width, height, seed, [steps — dev only], [guidance — optiona
 - **Response:** JSON containing a base64 image. **[M0]** Settled: it sits at `result.image`, and the format is JPEG. See `docs/m0-findings.md`.
 - **Saving:** detect the format from the magic bytes and always save as PNG. Write to a temp file, then `os.replace`.
 - **Seeds:** when `seed` is null, the seed is a random 32-bit integer, stored with the version. **[M0]** The same seed does **not** reproduce identical pixels on Klein 4B. The seed is kept as a record of how an image was made, not as a way to recreate it. Nothing may rely on regenerating an identical image from a stored seed. See `docs/m0-findings.md`.
+- **[M3]** A null seed is drawn from 0 … 2³¹−1, valid whether the API reads it as signed or unsigned 32-bit.
 
 ### 9.3 LLM
 ```
@@ -735,6 +753,8 @@ JSON: {model, messages:[{role:system,…},{role:user,…}], temperature, max_tok
 **Circuit breaker:** when `retry.circuit_breaker` `transient` failures happen in a row (a success resets the count), the run pauses. It saves state and prints *"Possible outage — run `stickman resume` later."*
 
 **Retry counts [M2]:** `retry.rate_limit_max` and `retry.transient_max` count retries after the first try.
+
+**[M3] What the breaker counts:** each API attempt that ends in a `transient` error, including attempts that are then retried. So with `transient_max: 3`, two units' failures can trip it. A `refused` request ends `failed` until M4 adds the softened retry (§7.5).
 
 ### 9.6 Cost estimates (`config/pricing.yaml`)
 These formulas are used only for **pre-call estimates** and for calls with no
@@ -771,6 +791,9 @@ free_daily_usd: 0.11      # 10,000 neurons × $0.011/1k
   - At or above `warn_ratio × weekly_usd`: warn once per run, in the CLI and on the review page.
   - Above `weekly_usd`: without `--force`, stop starting new calls, let in-flight calls finish, save state and print the budget message. With `--force`, continue with a visible warning.
 - **The free allocation:** estimates on the review page show *"up to $0.11 of today's usage may be covered by the free daily allocation"*. The ledger and budget always use the **gross** cost, which keeps them on the safe side.
+- **[M3]** Planning's LLM calls (`new`, `replan`) go in the ledger too. The weekly budget never stops them: a plan costs about $0.03, and `new` has no `--force`.
+  - The budget check applies to image calls.
+  - A run reads the week's spend from the ledger when it starts, and adds its own calls as they finish.
 
 ---
 
@@ -795,6 +818,12 @@ free_daily_usd: 0.11      # 10,000 neurons × $0.011/1k
 - skips the test pause
 - still runs QC, and still leaves the final gallery review to you
 
+**[M3] Until M6/M7:** there's no review page (M6) and no test-first flow (M7) yet, so `generate` has no approval steps.
+- It generates every `planned` or `failed` unit in time order.
+- `--limit N` generates at most N of them in one run.
+- On the free plan it first prints how many images fit in today's allocation.
+- A run that reaches the daily limit pauses with exit code 2. `resume` continues after 00:00 UTC.
+
 ### 10.2 Picking the test units
 Run over units in time order:
 1. **Mascot unit:** the first unit whose `characters` include `mascot`.
@@ -817,6 +846,7 @@ Run over units in time order:
   7. Apply the QC retries, if needed (§11.3).
   8. Set the final status and save the state.
 - Progress is shown in the CLI with rich: overall bar, per-status counts, cost so far.
+- **[M3]** There's no QC step until M4: a saved image makes the unit `generated`. The history file is written first, then `state.json`, then the current copy. A kill between any two is put right when the next run starts (§5.2). The status is saved as `generating` before the budget check, which runs before every attempt; a unit the budget stops goes back to `planned`.
 
 ### 10.4 Fingerprints and stale detection
 - **What the fingerprint covers:** `fingerprint = sha256(canonical_json({visual fields of the unit, image_prompt, seed-override, model, aspect, width, height, style_version, [sha256 of each reference file used]}))`, where:
@@ -976,6 +1006,12 @@ Exit codes: `0` success; `1` user or validation error; `2` a pause (budget, dail
 
 **[M2] Continuing on a later date:** when today's `<date>_<slug>` folder doesn't exist, `new` continues in the newest `<date>_<slug>` folder that has no `plan.yaml` and holds the same script, and says so after the `Project:` line, so a rerun after the 00:00 UTC reset finds the cached stages even when the local date has changed.
 
+**[M3] `generate` and `resume`:**
+- They take `-p`, or else use the most recently modified planned project. The strict `-p` rule comes in M7.
+- Their other options are `--force` (go past the weekly budget) and `--limit N`.
+- Both hold the project's `.lock` while they run.
+- Ctrl+C exits with code 130; finished images are kept.
+
 ---
 
 ## 14. Export
@@ -1076,6 +1112,10 @@ Cloudflare fixtures, generated images, neuron costs and the style verdict — is
 - **LLM planning failure:** handled per §6.1. Batches already cached are kept.
 - **Missing ffmpeg:** export fails with the command to install it.
 - **Logging:** every run writes `logs/run-*.jsonl` with one entry per API call: timestamp, category, model, parameters (prompt shortened to 300 characters, reference files by hash), time taken, HTTP status, error category, estimated cost and billing flag. The token is never logged.
+- **[M3] Log entries per attempt:** each API attempt gets its own entry, including attempts that are then retried.
+  - LLM entries also carry `cache_key`, `call` (the try within one validation attempt), `max_tokens`, `json_mode`, `billing`, `usd` and `request_id`.
+  - Image entries carry `unit`, `seed`, the size, `refs` (`path#sha256:…`), `billing`, `usd`, `neurons` and `request_id`.
+  - The token is also masked in console messages built from Cloudflare errors, and in errors kept in `state.json`.
 
 ---
 

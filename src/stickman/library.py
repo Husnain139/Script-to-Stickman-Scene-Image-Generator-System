@@ -51,6 +51,15 @@ def load_library(workspace: Path) -> list[LibraryCharacter]:
     return entries
 
 
+def anchor_ref_path(workspace: Path, style_version: int) -> Path:
+    """The style anchor's reference copy (spec §2.2, §8.1)."""
+    return workspace / "library" / "style" / f"anchor_v{style_version}_ref.png"
+
+
+def character_ref_path(workspace: Path, entry: LibraryCharacter) -> Path:
+    return workspace / "library" / "characters" / entry.id / entry.ref
+
+
 def find_references(
     workspace: Path,
     *,
@@ -61,7 +70,7 @@ def find_references(
     library: Sequence[LibraryCharacter],
 ) -> ReferenceAvailability:
     """Which approved reference images exist for this style version (spec §7.4, §8.3)."""
-    anchor = workspace / "library" / "style" / f"anchor_v{style_version}_ref.png"
+    anchor = anchor_ref_path(workspace, style_version)
     if not use_references or not anchor.is_file():
         return ReferenceAvailability()
     sheets: set[str] = set()
@@ -74,6 +83,6 @@ def find_references(
         entry = entries.get(member.library_ref)
         if entry is None or entry.style_version != style_version:
             continue
-        if (workspace / "library" / "characters" / entry.id / entry.ref).is_file():
+        if character_ref_path(workspace, entry).is_file():
             sheets.add(member.id)
     return ReferenceAvailability(anchor=True, sheets=frozenset(sheets))

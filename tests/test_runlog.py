@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 
-from stickman.runlog import RunLog, shorten
+from stickman.runlog import RunLog, mask, shorten
 
 
 def test_entries_are_json_lines_with_a_timestamp(tmp_path):
@@ -33,3 +33,8 @@ def test_a_log_without_a_path_writes_nothing(tmp_path):
 def test_shorten_keeps_short_text_and_marks_long_text():
     assert shorten("abc", 5) == "abc"
     assert shorten("abcdefgh", 5) == "abcde…<8 chars>"
+
+
+def test_mask_replaces_every_secret():
+    assert mask("token tok-secret and tok-secret", ("tok-secret", "")) == "token *** and ***"
+    assert RunLog(None, secrets=("tok-secret",)).mask("from tok-secret") == "from ***"

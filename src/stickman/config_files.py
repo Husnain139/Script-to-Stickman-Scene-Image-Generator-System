@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from stickman.settings import ConfigError, default_config_text
+from stickman.settings import ConfigError, default_config_text, read_config_text
 
 C = TypeVar("C", bound=BaseModel)
 
@@ -54,17 +54,8 @@ class VisualRules(_ConfigFile):
     rules: list[str]
 
 
-def read_config_text(path: Path) -> str:
-    """A hand-edited YAML file's text. A file that can't be read is a ConfigError naming it (exit 3)."""
-    try:
-        return path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise ConfigError(f"{path}: not UTF-8 text ({exc}). Save it as UTF-8.") from exc
-    except OSError as exc:
-        raise ConfigError(f"{path}: can't read it: {exc.strerror or exc}") from exc
-
-
-def _load(model: type[C], workspace: Path, name: str) -> C:
+def load_config_file(model: type[C], workspace: Path, name: str) -> C:
+    """config/<name> validated as `model`; the packaged default when the file is missing."""
     path = workspace / "config" / name
     text = read_config_text(path) if path.exists() else default_config_text(name)
     try:
@@ -81,12 +72,12 @@ def _load(model: type[C], workspace: Path, name: str) -> C:
 
 
 def load_style(workspace: Path) -> StyleConfig:
-    return _load(StyleConfig, workspace, "style.yaml")
+    return load_config_file(StyleConfig, workspace, "style.yaml")
 
 
 def load_mascot(workspace: Path) -> MascotConfig:
-    return _load(MascotConfig, workspace, "mascot.yaml")
+    return load_config_file(MascotConfig, workspace, "mascot.yaml")
 
 
 def load_visual_rules(workspace: Path) -> VisualRules:
-    return _load(VisualRules, workspace, "visual_rules.yaml")
+    return load_config_file(VisualRules, workspace, "visual_rules.yaml")

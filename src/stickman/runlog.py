@@ -15,10 +15,21 @@ def shorten(text: str, limit: int = PROMPT_LOG_CHARS) -> str:
     return text if len(text) <= limit else f"{text[:limit]}…<{len(text)} chars>"
 
 
+def mask(text: str, secrets: Sequence[str]) -> str:
+    """`text` with every secret replaced by ***."""
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "***")
+    return text
+
+
 class RunLog:
     def __init__(self, path: Path | None, *, secrets: Sequence[str] = ()) -> None:
         self.path = path
         self._secrets = tuple(secret for secret in secrets if secret)
+
+    def mask(self, text: str) -> str:
+        return mask(text, self._secrets)
 
     @classmethod
     def for_project(
@@ -31,9 +42,7 @@ class RunLog:
         if self.path is None:
             return
         record = {"ts": datetime.now().astimezone().isoformat(timespec="seconds"), **entry}
-        line = json.dumps(record, ensure_ascii=False)
-        for secret in self._secrets:
-            line = line.replace(secret, "***")
+        line = self.mask(json.dumps(record, ensure_ascii=False))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")

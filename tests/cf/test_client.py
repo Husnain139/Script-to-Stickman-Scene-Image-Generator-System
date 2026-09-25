@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -229,3 +231,135 @@ def test_chat_falls_back_to_usage_neurons_then_none():
 
     assert chat(with_usage).neurons == pytest.approx(3.25)
     assert chat(without).neurons is None
+
+
+FIXTURES = Path(__file__).parent.parent / "fixtures" / "cf"
+
+
+def test_image_result_carries_its_neurons_and_request_id():
+    def handler(request):
+        request.read()
+        return httpx.Response(
+            200,
+            headers={"cf-ai-neurons": "207.59", "cf-ai-req-id": "req-1"},
+            json={"result": {"image": base64.b64encode(PNG).decode()}},
+        )
+
+    result = generate(handler)
+    assert (result.neurons, result.request_id) == (207.59, "req-1")
+
+
+def test_an_image_response_without_cost_headers_has_none():
+    def handler(request):
+        request.read()
+        return httpx.Response(200, json={"result": {"image": base64.b64encode(PNG).decode()}})
+
+    result = generate(handler)
+    assert (result.neurons, result.request_id) == (None, None)
+
+
+def test_chat_result_carries_the_request_id():
+    def handler(request):
+        return httpx.Response(200, headers={"cf-ai-req-id": "req-2"}, json={"choices": [{"message": {"content": "OK"}}]})
+
+    assert chat(handler).request_id == "req-2"
+
+
+def test_recorded_klein_4b_headers_give_the_cost_and_request_id():
+    record = json.loads((FIXTURES / "image_klein4b_1920x1088.json").read_text(encoding="utf-8"))
+    headers = {name: record["headers"][name] for name in ("cf-ai-neurons", "cf-ai-req-id")}
+
+    def handler(request):
+        request.read()
+        # The M0 recorder shortened the recorded base64 image, so a small one stands in for it.
+        return httpx.Response(record["status"], headers=headers, json={"result": {"image": base64.b64encode(PNG).decode()}})
+
+    result = generate(handler, width=1920, height=1088)
+    assert result.neurons == pytest.approx(207.59)
+    assert result.request_id == record["headers"]["cf-ai-req-id"]
+
+
+# A token and an account id as long as real ones, so a cut can land inside them.
+LONG_TOKEN = "cfut_Q7w9E2r4T6y8U1i3O5p7A9s2D4f6G8h0"
+LONG_ACCOUNT = "0123456789abcdef0123456789abcdef"
+
+
+def failing_call(handler, call):
+    async def go():
+        async with CloudflareClient(
+            LONG_ACCOUNT, LONG_TOKEN, plan="paid", timeout_s=5, transport=httpx.MockTransport(handler)
+        ) as client:
+            if call == "chat":
+                return await client.chat("@cf/openai/gpt-oss-120b", [{"role": "user", "content": "hi"}])
+            return await client.generate_image(KLEIN_4B, prompt="a stickman", width=1920, height=1080, seed=42)
+
+    with pytest.raises(CFError) as info:
+        asyncio.run(go())
+    return info.value.message
+
+
+def assert_no_secret(message):
+    for secret in (LONG_TOKEN, LONG_ACCOUNT):
+        assert secret[:6] not in message, message
+    assert "***" in message
+
+
+def test_an_error_body_is_masked_before_it_is_cut():
+    body = "x" * 490 + LONG_TOKEN + "y" * 73  # 600 characters; the token crosses the 500-character cut
+    message = failing_call(lambda request: httpx.Response(400, text=body), "image")
+    assert_no_secret(message)
+
+
+def test_a_chat_body_that_is_not_json_is_masked_before_it_is_cut():
+    body = "x" * 290 + LONG_TOKEN  # crosses the 300-character cut
+    assert_no_secret(failing_call(lambda request: httpx.Response(200, text=body), "chat"))
+
+
+@pytest.mark.parametrize(
+    ("call", "data"),
+    [
+        ("chat", {"detail": "x" * 278 + LONG_TOKEN}),  # str(data) puts the token at 290, across character 300
+        ("image", {"result": {}, "detail": "x" * 264 + LONG_ACCOUNT}),
+    ],
+    ids=["chat-shape", "no-image"],
+)
+def test_an_unexpected_response_is_masked_before_it_is_cut(call, data):
+    def handler(request):
+        request.read()
+        return httpx.Response(200, json=data)
+
+    assert_no_secret(failing_call(handler, call))
+
+
+@pytest.mark.parametrize("error", [httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout])
+def test_a_network_error_that_names_the_secrets_is_masked(error):
+    def handler(request):
+        raise error(f"no route to /accounts/{LONG_ACCOUNT}/ai/run with {LONG_TOKEN}", request=request)
+
+    message = failing_call(handler, "image")
+    assert LONG_TOKEN not in message and LONG_ACCOUNT not in message
+    assert_no_secret(message)
+
+
+@pytest.mark.parametrize(
+    ("call", "response"),
+    [
+        ("chat", httpx.Response(200, text="not json")),
+        ("chat", httpx.Response(200, json={"unexpected": "shape"})),
+        ("image", httpx.Response(200, text="neither an image nor json")),
+        ("image", httpx.Response(200, json={"success": True, "result": {}})),
+        ("image", httpx.Response(200, json={"result": {"image": "abc"}})),  # not valid base64
+    ],
+    ids=["chat-not-json", "chat-shape", "image-not-json", "no-image", "bad-base64"],
+)
+def test_a_2xx_response_that_cant_be_read_was_possibly_billed(call, response):
+    """The call succeeded, so Cloudflare billed it, even though the answer is unusable."""
+
+    def handler(request):
+        request.read()
+        return response
+
+    with pytest.raises(CFError) as info:
+        chat(handler) if call == "chat" else generate(handler)
+    assert info.value.category is ErrorCategory.BAD_REQUEST
+    assert info.value.possibly_billed is True

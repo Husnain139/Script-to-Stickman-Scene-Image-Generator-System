@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import base64
 import binascii
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from stickman.cf.errors import CFError, ErrorCategory, classify
+from stickman.runlog import mask
 
 DEFAULT_BASE_URL = "https://api.cloudflare.com/client/v4"
 MAX_REFERENCE_IMAGES = 4
@@ -23,11 +24,14 @@ class LLMResult:
     output_tokens: int | None
     raw: dict[str, Any]
     neurons: float | None = None
+    request_id: str | None = None
 
 
 @dataclass(frozen=True)
 class ImageResult:
     image_bytes: bytes
+    neurons: float | None = None
+    request_id: str | None = None
 
 
 class CloudflareClient:
@@ -43,6 +47,7 @@ class CloudflareClient:
     ) -> None:
         self._account_url = f"{base_url}/accounts/{account_id}"
         self._plan = plan
+        self._secrets = tuple(secret for secret in (api_token, account_id) if secret)
         self._http = httpx.AsyncClient(
             headers={"Authorization": f"Bearer {api_token}"},
             timeout=timeout_s,
@@ -57,6 +62,11 @@ class CloudflareClient:
 
     async def aclose(self) -> None:
         await self._http.aclose()
+
+    def _redact(self, text: str) -> str:
+        """`text` with the token and the account id masked. Done before any cut, so no part of a
+        secret survives a cut that lands inside it."""
+        return mask(text, self._secrets)
 
     async def chat(
         self,
@@ -76,11 +86,14 @@ class CloudflareClient:
         if response_format is not None:
             body["response_format"] = response_format
         response = await self._post(f"{self._account_url}/ai/v1/chat/completions", json=body)
+        # From here the call has succeeded (2xx) and was billed, so an unreadable answer is possibly_billed.
         try:
             data = response.json()
         except ValueError as exc:
             raise CFError(
-                ErrorCategory.BAD_REQUEST, f"chat response is not JSON: {response.text[:300]}"
+                ErrorCategory.BAD_REQUEST,
+                f"chat response is not JSON: {self._redact(response.text)[:300]}",
+                possibly_billed=True,
             ) from exc
         if isinstance(data, dict) and "choices" not in data and isinstance(data.get("result"), dict):
             data = data["result"]
@@ -88,7 +101,9 @@ class CloudflareClient:
             text = data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:
             raise CFError(
-                ErrorCategory.BAD_REQUEST, f"unexpected chat response shape: {str(data)[:300]}"
+                ErrorCategory.BAD_REQUEST,
+                f"unexpected chat response shape: {self._redact(str(data))[:300]}",
+                possibly_billed=True,
             ) from exc
         usage = data.get("usage")
         if not isinstance(usage, dict):
@@ -99,6 +114,7 @@ class CloudflareClient:
             output_tokens=usage.get("completion_tokens"),
             raw=data,
             neurons=_neurons(response, usage),
+            request_id=_request_id(response),
         )
 
     async def generate_image(
@@ -131,23 +147,29 @@ class CloudflareClient:
             name = f"input_image_{index}"
             fields.append((name, (f"{name}.png", image, "image/png")))
         response = await self._post(f"{self._account_url}/ai/run/{model}", files=fields)
-        return ImageResult(image_bytes=_extract_image(response))
+        return ImageResult(
+            image_bytes=_extract_image(response, self._redact),
+            neurons=_neurons(response, {}),
+            request_id=_request_id(response),
+        )
 
     async def _post(self, url: str, **kwargs: Any) -> httpx.Response:
         try:
             response = await self._http.post(url, **kwargs)
         except (httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
             raise CFError(
-                ErrorCategory.TRANSIENT, f"timeout: {exc!r}", possibly_billed=False
+                ErrorCategory.TRANSIENT, f"timeout: {self._redact(repr(exc))}", possibly_billed=False
             ) from exc
         except httpx.TimeoutException as exc:
-            raise CFError(ErrorCategory.TRANSIENT, f"timeout: {exc!r}", possibly_billed=True) from exc
+            raise CFError(
+                ErrorCategory.TRANSIENT, f"timeout: {self._redact(repr(exc))}", possibly_billed=True
+            ) from exc
         except httpx.RequestError as exc:
-            raise CFError(ErrorCategory.TRANSIENT, f"network error: {exc!r}") from exc
+            raise CFError(ErrorCategory.TRANSIENT, f"network error: {self._redact(repr(exc))}") from exc
         if response.status_code >= 400:
             raise CFError(
                 classify(response.status_code, response.text, plan=self._plan),
-                response.text[:500],
+                self._redact(response.text)[:500],
                 status=response.status_code,
                 retry_after=_retry_after(response),
             )
@@ -174,20 +196,30 @@ def _neurons(response: httpx.Response, usage: dict[str, Any]) -> float | None:
     return None
 
 
-def _extract_image(response: httpx.Response) -> bytes:
+def _request_id(response: httpx.Response) -> str | None:
+    """Cloudflare's id for the call, kept in the ledger (spec §5.4)."""
+    return response.headers.get("cf-ai-req-id") or response.headers.get("cf-ray")
+
+
+def _extract_image(response: httpx.Response, redact: Callable[[str], str]) -> bytes:
+    """The image of a successful (2xx) call, which was billed: an unreadable answer is possibly_billed."""
     if response.headers.get("content-type", "").startswith("image/"):
         return response.content
     try:
         data = response.json()
     except ValueError as exc:
-        raise CFError(ErrorCategory.BAD_REQUEST, "image response is neither an image nor JSON") from exc
+        raise CFError(
+            ErrorCategory.BAD_REQUEST, "image response is neither an image nor JSON", possibly_billed=True
+        ) from exc
     result = data.get("result") if isinstance(data, dict) else None
     encoded = (result.get("image") if isinstance(result, dict) else None) or (
         data.get("image") if isinstance(data, dict) else None
     )
     if not encoded:
-        raise CFError(ErrorCategory.BAD_REQUEST, f"no image in response: {str(data)[:300]}")
+        raise CFError(
+            ErrorCategory.BAD_REQUEST, f"no image in response: {redact(str(data))[:300]}", possibly_billed=True
+        )
     try:
         return base64.b64decode(encoded)
     except (binascii.Error, ValueError) as exc:
-        raise CFError(ErrorCategory.BAD_REQUEST, "image field is not valid base64") from exc
+        raise CFError(ErrorCategory.BAD_REQUEST, "image field is not valid base64", possibly_billed=True) from exc

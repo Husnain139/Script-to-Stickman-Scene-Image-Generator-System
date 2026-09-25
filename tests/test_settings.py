@@ -96,3 +96,10 @@ def test_load_config_without_secrets(tmp_path):
 def test_every_default_config_file_parses_with_schema_version(name):
     data = YAML(typ="safe").load(default_config_text(name))
     assert data["schema_version"] == 1
+
+
+def test_a_settings_file_that_is_not_utf8_is_a_config_error(tmp_path):
+    path = tmp_path / "settings.yaml"
+    path.write_bytes("account:\n  plan: free  # café\n".encode("cp1252"))
+    with pytest.raises(ConfigError, match="not UTF-8"):
+        load_settings(path)

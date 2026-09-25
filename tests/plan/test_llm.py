@@ -6,8 +6,12 @@ from pydantic import BaseModel, ConfigDict
 
 from stickman.cf.client import LLMResult
 from stickman.cf.errors import CFError, ErrorCategory
-from stickman.plan.llm import CUT_OFF_ERROR, STAGE_MAX_TOKENS, PlanningError, StageRequest
-from stickman.settings import LLMSettings
+from stickman.ledger import Ledger
+from stickman.meter import Meter
+from stickman.plan.llm import CUT_OFF_ERROR, FALLBACK_MAX_TOKENS, STAGE_MAX_TOKENS, PlanningError, StageRequest, StageRunner
+from stickman.pricing import load_pricing
+from stickman.runlog import RunLog
+from stickman.settings import LLMSettings, RetrySettings
 
 LLM = LLMSettings()
 GOOD = '{"animal": "dog", "legs": 4}'
@@ -174,3 +178,58 @@ def test_a_complete_but_wrong_answer_keeps_its_real_errors_when_cut_off(fake_cha
     feedback = chat.calls[1]["messages"][3]["content"]
     assert "legs: expected 4, got 8" in feedback
     assert CUT_OFF_ERROR not in feedback
+
+
+def test_every_api_call_is_logged_including_retried_ones(fake_chat, stage_runner, tmp_path):
+    log_path = tmp_path / "run.jsonl"
+    chat = fake_chat([
+        CFError(ErrorCategory.RATE_LIMITED, "slow down", status=429),
+        CFError(ErrorCategory.TRANSIENT, "timeout", possibly_billed=True),
+        GOOD,
+    ])
+    run(stage_runner(chat, log_path=log_path), request())
+    entries = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert [(e["attempt"], e["call"], e["ok"], e.get("error"), e["billing"]) for e in entries] == [
+        (1, 1, False, "rate_limited", "not_billed"),
+        (1, 2, False, "transient", "possibly_billed"),
+        (1, 3, True, None, "billed"),
+    ]
+    assert len({e["cache_key"] for e in entries}) == 1
+    assert all(e["max_tokens"] == STAGE_MAX_TOKENS and e["json_mode"] is False for e in entries)
+
+
+def test_the_fallback_model_has_its_own_token_limit(fake_chat, stage_runner):
+    chat = fake_chat(["nope", "nope", GOOD])
+    run(stage_runner(chat), request())
+    assert [c["max_tokens"] for c in chat.calls] == [STAGE_MAX_TOKENS, STAGE_MAX_TOKENS, FALLBACK_MAX_TOKENS]
+    assert chat.calls[2]["model"] == LLM.fallback_model
+
+
+def test_planning_calls_go_in_the_ledger(fake_chat, tmp_path):
+    async def no_sleep(seconds):
+        return None
+
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    meter = Meter(project="2026-09-25_demo", ledger=ledger, pricing=load_pricing(tmp_path))
+    runner = StageRunner(fake_chat([GOOD]), LLMSettings(), RetrySettings(), cache_dir=None, log=RunLog(None),
+                         sleep=no_sleep, meter=meter)
+    run(runner, request())
+    [entry] = list(ledger.entries())
+    assert (entry.kind, entry.model, entry.billing, entry.neurons, entry.project) == (
+        "llm", LLM.planner_model, "billed", 1.5, "2026-09-25_demo")
+    assert entry.est_usd == pytest.approx(1.5 * 0.011 / 1000)
+
+
+def test_a_token_across_the_log_cut_is_masked_before_the_message_is_shortened(fake_chat, tmp_path):
+    async def no_sleep(seconds):
+        return None
+
+    log_path = tmp_path / "run.jsonl"
+    message = "x" * 295 + "tok-secret"  # crosses the run log's 300-character cut
+    runner = StageRunner(fake_chat([CFError(ErrorCategory.BAD_REQUEST, message)]), LLMSettings(), RetrySettings(),
+                         cache_dir=None, log=RunLog(log_path, secrets=("tok-secret",)), sleep=no_sleep)
+    with pytest.raises(CFError):
+        run(runner, request())
+    [entry] = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert entry["message"].startswith("x" * 295 + "***")
+    assert "tok-s" not in log_path.read_text(encoding="utf-8")

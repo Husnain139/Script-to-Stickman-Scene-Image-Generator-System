@@ -2,14 +2,39 @@
 
 from __future__ import annotations
 
+import asyncio
+import functools
+import inspect
+import io
 import json
 
 import pytest
+from PIL import Image
 
-from stickman.cf.client import LLMResult
+from stickman.cf.client import ImageResult, LLMResult
 from stickman.plan.llm import StageRunner
 from stickman.runlog import RunLog
 from stickman.settings import LLMSettings, RetrySettings
+
+
+@pytest.fixture(autouse=True)
+def _plain_console(monkeypatch):
+    """Rich colours CLI output when FORCE_COLOR is set in the user's shell; assertions compare plain text."""
+    for name in ("FORCE_COLOR", "TTY_COMPATIBLE", "TTY_INTERACTIVE"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@functools.lru_cache
+def jpeg_bytes(width=64, height=36):
+    """A small white JPEG, like the base64 JPEG Klein returns (M0)."""
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), "white").save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+@pytest.fixture
+def jpeg():
+    return jpeg_bytes()
 
 
 class FakeChat:
@@ -55,6 +80,60 @@ class FakeChat:
 @pytest.fixture
 def fake_chat():
     return FakeChat
+
+
+class FakeImages:
+    """Stands in for CloudflareClient.generate_image (and `async with`).
+
+    `outcomes` is None (every call gets a small JPEG), a list (one outcome per call, in order), or a
+    function `(call) -> outcome`. An outcome is image bytes, an exception to raise, or an awaitable
+    that gives image bytes (a slow request).
+    """
+
+    def __init__(self, outcomes=None, *, neurons=207.59):
+        self._outcomes = list(outcomes) if isinstance(outcomes, (list, tuple)) else outcomes
+        self._neurons = neurons
+        self.calls = []
+        self.active = 0
+        self.max_active = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return None
+
+    async def generate_image(self, model, *, prompt, width, height, seed, steps=None, guidance=None, input_images=()):
+        call = {"model": model, "prompt": prompt, "width": width, "height": height, "seed": seed,
+                "steps": steps, "input_images": list(input_images)}
+        self.calls.append(call)
+        number = len(self.calls)
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(0)  # like a network call: other requests can start meanwhile
+            outcome = self._next(call)
+            if inspect.isawaitable(outcome):
+                outcome = await outcome
+        finally:
+            self.active -= 1
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return ImageResult(image_bytes=outcome, neurons=self._neurons, request_id=f"req-{number}")
+
+    def _next(self, call):
+        if self._outcomes is None:
+            return jpeg_bytes()
+        if callable(self._outcomes):
+            return self._outcomes(call)
+        if not self._outcomes:
+            raise AssertionError("FakeImages: more calls than scripted outcomes")
+        return self._outcomes.pop(0)
+
+
+@pytest.fixture
+def fake_images():
+    return FakeImages
 
 
 @pytest.fixture
