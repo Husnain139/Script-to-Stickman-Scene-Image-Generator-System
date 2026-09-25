@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import math
 import shutil
+import sys
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -74,9 +76,19 @@ app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()
 
 
+def _utf8_output() -> None:
+    """Windows gives a redirected stdout the ANSI code page (cp1252), which can't encode ≈ or LLM text
+    such as U+2011. Write UTF-8 instead, and replace anything that still can't be written."""
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "").replace("_", "")
+        if isinstance(stream, io.TextIOWrapper) and encoding != "utf8":
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 @app.callback()
 def main() -> None:
     """Script-to-stickman scene image generator."""
+    _utf8_output()
 
 
 def _today() -> date:
