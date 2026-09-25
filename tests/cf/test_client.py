@@ -207,3 +207,25 @@ def test_connect_timeout_is_transient_not_billed():
         generate(handler)
     assert info.value.category is ErrorCategory.TRANSIENT
     assert info.value.possibly_billed is False
+
+
+def _chat_body(**extra):
+    return {"choices": [{"message": {"content": "{}"}}], **extra}
+
+
+def test_chat_reports_neurons_from_the_response_header():
+    def handler(request):
+        return httpx.Response(200, headers={"cf-ai-neurons": "7.52"}, json=_chat_body(usage={"prompt_tokens": 80}))
+
+    assert chat(handler).neurons == pytest.approx(7.52)
+
+
+def test_chat_falls_back_to_usage_neurons_then_none():
+    def with_usage(request):
+        return httpx.Response(200, json=_chat_body(usage={"neurons": 3.25}))
+
+    def without(request):
+        return httpx.Response(200, json=_chat_body())
+
+    assert chat(with_usage).neurons == pytest.approx(3.25)
+    assert chat(without).neurons is None

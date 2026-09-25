@@ -16,6 +16,9 @@ class GroupingError(ValueError):
 class Scene:
     number: int
     lines: tuple[TimedLine, ...]
+    # 1-based positions of the analyse-stage groups merged into this scene. Scene-level
+    # corrections are stored per group, so this is how they follow a short-scene merge.
+    groups: tuple[int, ...] = ()
 
     @property
     def start(self) -> float:
@@ -32,6 +35,11 @@ class Scene:
     @property
     def words(self) -> int:
         return sum(line.words for line in self.lines)
+
+    @property
+    def tokens(self) -> tuple[str, ...]:
+        """The scene's words in order: whitespace tokens of the original text (spec §4.2)."""
+        return tuple(token for line in self.lines for token in line.text.split())
 
     @property
     def source_text(self) -> str:
@@ -52,7 +60,8 @@ def build_scenes(
         raise GroupingError("groups must list every line exactly once, in order")
     by_number = {line.number: line for line in lines}
     return [
-        Scene(index, tuple(by_number[n] for n in group)) for index, group in enumerate(groups, 1)
+        Scene(index, tuple(by_number[n] for n in group), (index,))
+        for index, group in enumerate(groups, 1)
     ]
 
 
@@ -61,20 +70,26 @@ def merge_short_scenes(
 ) -> list[Scene]:
     if min_scene_seconds <= 0:
         return list(scenes)
-    merged: list[list[TimedLine]] = []
+    merged: list[tuple[list[TimedLine], list[int]]] = []
     for scene in scenes:
-        lines = list(scene.lines)
         if (
             merged
             and scene.duration < min_scene_seconds
-            and len(merged[-1]) + len(lines) <= max_lines
+            and len(merged[-1][0]) + len(scene.lines) <= max_lines
         ):
-            merged[-1].extend(lines)
+            merged[-1][0].extend(scene.lines)
+            merged[-1][1].extend(scene.groups)
         else:
-            merged.append(lines)
+            merged.append((list(scene.lines), list(scene.groups)))
     if len(merged) >= 2:
-        first = merged[0]
-        if first[-1].end - first[0].start < min_scene_seconds and len(first) + len(merged[1]) <= max_lines:
-            merged[1] = first + merged[1]
+        first_lines, first_groups = merged[0]
+        if (
+            first_lines[-1].end - first_lines[0].start < min_scene_seconds
+            and len(first_lines) + len(merged[1][0]) <= max_lines
+        ):
+            merged[1] = (first_lines + merged[1][0], first_groups + merged[1][1])
             merged.pop(0)
-    return [Scene(index, tuple(lines)) for index, lines in enumerate(merged, 1)]
+    return [
+        Scene(index, tuple(lines), tuple(groups))
+        for index, (lines, groups) in enumerate(merged, 1)
+    ]

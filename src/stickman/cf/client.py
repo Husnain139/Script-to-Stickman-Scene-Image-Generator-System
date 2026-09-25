@@ -22,6 +22,7 @@ class LLMResult:
     input_tokens: int | None
     output_tokens: int | None
     raw: dict[str, Any]
+    neurons: float | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ class CloudflareClient:
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
             raw=data,
+            neurons=_neurons(response, usage),
         )
 
     async def generate_image(
@@ -158,6 +160,18 @@ def _retry_after(response: httpx.Response) -> float | None:
         return float(value) if value is not None else None
     except ValueError:
         return None
+
+
+def _neurons(response: httpx.Response, usage: dict[str, Any]) -> float | None:
+    """Actual cost of the call: the cf-ai-neurons header, else usage.neurons (docs/m0-findings.md)."""
+    for value in (response.headers.get("cf-ai-neurons"), usage.get("neurons")):
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _extract_image(response: httpx.Response) -> bytes:

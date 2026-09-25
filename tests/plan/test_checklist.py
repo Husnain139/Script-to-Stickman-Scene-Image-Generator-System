@@ -1,0 +1,116 @@
+import asyncio
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+from stickman.ingest.parse import parse_script
+from stickman.ingest.timing import build_timeline
+from stickman.plan.checklist import evaluate, render_markdown, tuning_tasks
+from stickman.plan.models import CharacterRef, Correction
+from stickman.plan.planner import load_planning_context, plan_script
+from stickman.settings import Settings, TimingSettings
+
+SAMPLE = Path(__file__).parents[1] / "fixtures" / "scripts" / "first-sleep.txt"
+LINES = build_timeline(parse_script(SAMPLE.read_text(encoding="utf-8")), TimingSettings()).lines
+MASCOT_UNITS = ["012", "026a", "026b", "027", "028a", "028b"]  # 0:58, 1:57, 2:04, 2:06
+
+
+@pytest.fixture
+def plan(sample_chat, stage_runner, tmp_path):
+    """The sample planned by FakeChat: every correction found, but no mascot anywhere."""
+    ctx = load_planning_context(tmp_path, Settings())
+    text = SAMPLE.read_text(encoding="utf-8")
+    outcome = asyncio.run(plan_script(stage_runner(sample_chat), ctx, script_text=text, project="first-sleep", aspect="16:9", duration=None))
+    return outcome.plan
+
+
+def test_expected_corrections_merges_and_extras(plan):
+    report = evaluate(plan, LINES)
+    assert report.corrections_found == 5
+    assert report.other_corrections == []
+    assert report.lines_13_14_merged is True
+    assert report.merges_to_judge == []
+    assert report.prehistoric_entries == ["caveman_group"]
+    assert len(report.prehistoric_units) == 36
+
+
+def test_the_mascot_rule_is_scored_per_unit(plan):
+    report = evaluate(plan, LINES)
+    assert report.mascot_checked == 36
+    assert report.mascot_misses == MASCOT_UNITS
+    assert report.meets_target is False  # 30 of 36 is 83%, below 90%
+    for unit in plan.units():
+        if unit.id in MASCOT_UNITS:
+            unit.characters.append(CharacterRef(ref="mascot", action="lying awake", emotion="worried"))
+    fixed = evaluate(plan, LINES)
+    assert fixed.mascot_score == 1.0
+    assert fixed.meets_target is True
+
+
+def test_missing_wrong_and_extra_corrections_are_reported(plan):
+    first, zhuansi = plan.scenes[0], plan.scenes[5]
+    zhuansi.corrected_text = zhuansi.source_text  # left uncorrected
+    plan.corrections = [c for c in plan.corrections if c.from_ != "Zhuansi"]
+    first.corrected_text = first.corrected_text.replace("9 at night", "nine at night")
+    plan.corrections[0] = plan.corrections[0].model_copy(update={"to": "nine at night"})
+    plan.corrections.append(Correction(scene="002", from_="light switch", to="lamp", reason="style"))
+    report = evaluate(plan, LINES)
+    assert report.corrections_found == 3
+    by_source = {e.source: e for e in report.expected}
+    assert by_source["Zhuansi"].found is None and by_source["Zhuansi"].exact is False
+    assert by_source["90 at night"].found is not None and by_source["90 at night"].exact is False
+    assert [c.from_ for c in report.other_corrections] == ["light switch"]
+
+
+def test_a_shorter_correction_with_the_expected_result_counts(plan):
+    plan.corrections[0] = plan.corrections[0].model_copy(update={"from_": "90", "to": "9"})
+    report = evaluate(plan, LINES)
+    assert report.expected[0].exact is True
+    assert report.expected[0].found.from_ == "90"
+    assert report.other_corrections == []
+
+
+def test_merges_the_rules_did_not_flag_are_listed_for_judgement(plan):
+    plan.scenes[1].lines = [2, 3]
+    report = evaluate(plan, LINES)
+    assert report.merges_to_judge == ["002 (lines 2, 3)"]
+    assert not any(task.startswith("Merges") for task in tuning_tasks(report))
+
+
+def test_an_early_humans_entry_counts_as_the_prehistoric_group(plan):
+    plan.cast[1] = plan.cast[1].model_copy(update={"id": "early_humans", "name": "Early humans"})
+    assert evaluate(plan, LINES).prehistoric_entries == ["early_humans"]
+
+
+def test_the_report_lists_results_and_tuning_tasks(plan):
+    text = render_markdown(evaluate(plan, LINES), model="@cf/openai/gpt-oss-120b", neurons=1234.0)
+    assert text.startswith("# M2 planning checklist (spec §17)\n")
+    assert "1234 neurons" in text
+    assert "**Target met: no.**" in text
+    assert "## Expected corrections: 5 of 5" in text
+    assert "## Mascot rule: 83% of 36 units" in text
+    assert "- Units breaking it: 012, 026a, 026b, 027, 028a, 028b" in text
+    assert "- Mascot rule: the mascot is wrong in 6 units (012, 026a, 026b, 027, 028a, 028b)." in text
+    assert "- Merges the fragment rules didn't flag (judge by hand): none" in text
+    assert "- Prehistoric-people cast entries: caveman_group" in text
+
+
+def test_curly_apostrophes_still_match(plan):
+    curly = "Ju/\u2019hoansi"
+    assert "\u2019" in curly  # guards against the escape being lost
+    scene = plan.scenes[5]
+    scene.corrected_text = scene.corrected_text.replace("Ju/'hoansi", curly)
+    assert curly in scene.corrected_text
+    report = evaluate(plan, LINES)
+    assert next(e for e in report.expected if e.source == "Zhuansi").exact is True
+
+
+def test_the_live_script_writes_its_report_beside_its_plan_not_over_the_docs():
+    """Only imports scripts/m2_checklist.py (main() is not run), so nothing is called or written."""
+    path = Path(__file__).parents[2] / "scripts" / "m2_checklist.py"
+    spec = importlib.util.spec_from_file_location("m2_checklist", path)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    assert script.REPORT == script.OUT / "m2-planning-checklist.md"
+    assert script.OUT.name == "m2_out"

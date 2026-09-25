@@ -216,7 +216,8 @@ The split engine takes no LLM output other than the candidate list, so it is uni
 
 ### 4.6 Units
 - Units are the images to generate: unsplit scenes plus split parts, in time order.
-- A unit's `source_text` is its own words. For parts, `corrected_text` is the part of the scene's corrected text matching those words. It is aligned by the LLM in the describe stage and checked to be non-empty.
+- A unit's `source_text` is its own words. For parts, `corrected_text` is the part of the scene's corrected text matching those words.
+- **[M2]** Code sets it: a part's `corrected_text` is its own words with the corrections that lie inside them applied, so part a and part b joined with a space are the scene's corrected text. Only when a correction straddles the cut does the describe stage's `corrected_text` give the parts' texts, checked as §6.4 says.
 
 ### 4.7 Expected result for the sample script (golden test, milestone M1)
 The sample script in the brief has 29 lines.
@@ -321,6 +322,8 @@ scenes:
 - When any visual field of a locked unit changes, the tool warns: *"Unit 006a has a locked prompt; field changes won't affect it. Run `stickman rebuild-prompt 006a` to unlock and rebuild."*
 - When the tool writes `plan.yaml`, it uses ruamel round-trip mode, so your comments and field order are kept.
 
+**`merge_check` entries [M2]:** `{line: 13, rules: merge, llm: separate}`. `rules` is what the fragment rules (§4.4) say about merging that line with the next one, and `llm` is what the analyse stage did. The last line is never listed.
+
 ### 5.2 `state.json` (tool data)
 
 ```json
@@ -406,6 +409,7 @@ An entry whose `style_version` is not the current `style.yaml` version is flagge
   - **2nd failure:** the same request goes to `llm.fallback_model` with `response_format: {type: json_schema, json_schema: <schema>}`.
   - **The fallback also fails twice:** planning stops. The errors are written to `logs/`. Batches that already succeeded stay in `.cache/llm/`, so running the command again continues from the failed stage.
 - **Caching:** the cache key is `sha256(model + stage + prompt + schema)`.
+  - **[M2]** `model` is always `llm.planner_model`, even when the fallback produced the cached answer, so a rerun finds it. `prompt` is the system prompt plus the user message. The stage's JSON schema is appended to the system prompt (`SCHEMA:`), because the planner's first attempts are sent without `response_format`. `replan` never reads the cache, so asking again gives a new design.
 
 ### 6.2 Stage 1: analyse
 **System prompt:**
@@ -422,12 +426,18 @@ Return ONLY JSON matching the provided schema. Tasks:
 
 2. CORRECTIONS — Fix only obvious speech-to-text errors that would change what should be drawn or
    shown in captions: impossible numbers ("90 at night" → "9 at night"), misheard names and terms.
+   A wrong number is replaced by the right number, never by a word. A misheard name is replaced by the
+   real name in its standard spelling (keep special characters), never by a different or broader name.
+   Number-word mix-ups count as misheard terms ("the 2 half" → "the second half").
    If unsure, do not correct. Never rephrase or improve style. Corrections apply to GROUPS: a
    group's text is its lines joined with one space, so a correction may span a line break
-   ("Roger E. Kirch" → "Roger Ekirch"). Give the group number (1-based position in your "groups"
-   list), the exact "from" text as it appears in the group text, the "to" text and a short reason.
+   ("Roger E. Kirch" → "Roger Ekirch"). For each correction
+   give "line" (the number of the line where the "from" text starts), the exact "from" text as it
+   appears in that line's group text, the "to" text and a short reason.
 
-3. CAST — List the recurring or important NON-mascot characters (people or groups). The mascot
+3. CAST — List the recurring or important NON-mascot characters (people or groups), including people
+   or groups the pictures will need even when a line only implies them (for example the people living
+   in the time or place a line describes). The mascot
    ("mascot") is a fixed everyman character that is NOT listed here. For each: id (snake_case),
    name, figures (how many stick figures), and a 1–2 sentence visual description using BIG, SIMPLE,
    drawable features only: one clothing item, a hair shape, one accessory (beard, glasses, hat, book).
@@ -440,7 +450,9 @@ human experience. Historical, scientific or third-person scenes use cast charact
 ```
 **User message:** a `LINES` block with `[n] M:SS (d.s s, w words) text` per line, then `HINTS: [line numbers]`, then `LIBRARY: [{id, name, figures, description, tags}]`.
 
-**Schema:** `{groups: [[int]], corrections: [{group, from, to, reason}], cast: [{id, name, figures, description, library_ref|null}]}`
+**Schema:** `{groups: [[int]], corrections: [{line, from, to, reason}], cast: [{id, name, figures, description, library_ref|null}]}`
+
+**[M2]** Corrections name a line, not a group position: in the live run the model confused group positions with line numbers once lines 13 and 14 had merged. The code maps the line to its group.
 
 **Applying corrections (code, not the LLM):**
 - Corrections are applied at **scene level, after grouping**. Each scene's `corrected_text` is its `source_text` with every correction for that scene replaced, first occurrence only, in the order given.
@@ -449,7 +461,8 @@ human experience. Historical, scientific or third-person scenes use cast charact
 
 **Stage checks:**
 - The groups are valid (§4.4).
-- Each correction's `group` exists, and its `from` text occurs in that group's merged text (lines joined with one space).
+- Each correction's `line` exists, and its `from` text occurs in the merged text of the group holding that line (lines joined with one space).
+- **[M2]** `from` must appear exactly once as whole words in its group (a word edge is needed only where `from` starts or ends with a letter or digit), and two corrections in one group must not overlap, so every correction has exactly one place.
 - Cast IDs are unique and don't equal `mascot`.
 - Each `library_ref` exists.
 
@@ -513,6 +526,7 @@ Rules:
 - The IDs exactly match the batch.
 - The rules in §5.1 hold.
 - `corrected_text` is not empty.
+- **[M2]** For a split part whose text code can't derive (§4.6), `corrected_text` must be the start (part `1 of 2`) or the end (part `2 of 2`) of the scene's corrected text, at a word edge and shorter than the whole (whitespace normalised). Every other unit's `corrected_text` answer is ignored, because code sets it.
 - **Text-word filter:**
   - It applies **only to the fields that go into the image prompt**: `visual_idea`, `characters[].action`, `setting`, `props` and `composition`.
   - It never applies to `source_text` or `corrected_text`. Line 14 of the sample, for example, contains "medical texts".
@@ -522,6 +536,7 @@ Rules:
 ### 6.5 `replan <unit> [--hint "..."]`
 - Reruns stage 3 for one unit, with the same context plus `HINT: <text>` if one was given.
 - The unit's visual fields are replaced and its prompt is rebuilt, which sets `prompt_locked: false`. Timing is not changed.
+- **[M2]** `corrected_text` is not changed either, so a caption you edited by hand survives.
 - The write to `plan.yaml` is checked against the file hash (§12.4). The unit becomes `stale` if it had an image.
 
 ### 6.6 `recompose --aspect 9:16`
@@ -626,6 +641,8 @@ the pose described above.
 - **Slots 2–3:** the next extras' references, in `characters` order.
 - A cast member without an approved sheet appears in the text only.
 
+**Small wording rules [M2]:** trailing full stops of `visual_idea`, `composition`, cast descriptions and actions are trimmed, so the template's own full stop isn't doubled. `visual_idea` and `composition` start with a capital letter. "a" or "an" matches the emotion. A unit with no characters says `Characters: none.`
+
 ### 7.5 Prompt fixes for retries (keyed by QC reason, §11.3)
 | Reason | Change on retry |
 |---|---|
@@ -716,6 +733,8 @@ JSON: {model, messages:[{role:system,…},{role:user,…}], temperature, max_tok
 | timeout | No response within `render.timeout_s` | `transient`, and the ledger entry is `billing: possibly_billed` |
 
 **Circuit breaker:** when `retry.circuit_breaker` `transient` failures happen in a row (a success resets the count), the run pauses. It saves state and prints *"Possible outage — run `stickman resume` later."*
+
+**Retry counts [M2]:** `retry.rate_limit_max` and `retry.transient_max` count retries after the first try.
 
 ### 9.6 Cost estimates (`config/pricing.yaml`)
 These formulas are used only for **pre-call estimates** and for calls with no
@@ -952,6 +971,10 @@ POST /api/units/{id}/replan           POST /api/units/approve-remaining
 | `stickman library list` | Lists the library characters, flagging any with an outdated style version |
 
 Exit codes: `0` success; `1` user or validation error; `2` a pause (budget, daily limit, circuit breaker, waiting for approval); `3` an auth or config error.
+
+**[M2] `new` and `replan`:** `new` refuses to run when the project already has a `plan.yaml`. If planning stopped (daily limit or a failure), running the same `new` command again continues from the cached stages. `replan` uses `-p`, or else the most recently modified project. The strict `-p` rule, `--no-review`, opening the review page, prompt-lock detection (§5.1) and stale marking (§10.4) come in M3–M7.
+
+**[M2] Continuing on a later date:** when today's `<date>_<slug>` folder doesn't exist, `new` continues in the newest `<date>_<slug>` folder that has no `plan.yaml` and holds the same script, and says so after the `Project:` line, so a rerun after the 00:00 UTC reset finds the cached stages even when the local date has changed.
 
 ---
 
