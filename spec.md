@@ -364,6 +364,18 @@ scenes:
 
 **Safe writes:** write to `state.json.tmp`, call `fsync`, then `os.replace`. If Windows reports the file as locked, retry up to 10 times, 100 ms apart. The state is written after **every** status change, and within one second of each image being saved.
 
+**[M3] Errors, version records and recovery:**
+- Each unit also has `error`: the last API error (`<category>: <message>`, token masked) of a unit that ended `failed`.
+- Each history PNG carries a copy of its version record, as JSON in a `stickman` text chunk.
+- When a run starts, it does these steps in order:
+  1. Temp files are removed.
+  2. `generating` goes back to `planned`.
+  3. A history image that `state.json` doesn't list is added from the copy inside it, and becomes current. This happens when a kill landed between saving the image and saving the state.
+  4. Each current image `images/<unit>_<MM-SS.s>.png` is copied again from its version if it's missing or different.
+  5. Stale units are marked (§10.4).
+- A stale unit whose fingerprint matches again goes back to `approved` if it has an approved version, else to `generated`. From M4 it goes to `needs_review` when its current version failed QC.
+- `qc` stays null until M4.
+
 ### 5.3 Character library entry (`library/characters/<id>/character.yaml`)
 ```yaml
 schema_version: 1
