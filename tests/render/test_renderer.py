@@ -7,7 +7,7 @@ from PIL import Image
 
 from stickman.budget import Budget
 from stickman.cf.errors import CFError, ErrorCategory
-from stickman.config_files import MascotConfig, load_mascot
+from stickman.config_files import MascotConfig, load_mascot, load_style, load_visual_rules
 from stickman.ledger import Ledger
 from stickman.meter import Meter
 from stickman.plan.models import parse_plan
@@ -39,7 +39,8 @@ class Run:
     def __init__(self, workspace, plan_data, client, *, mascot=None, budget=None, concurrency=4, retry=None):
         self.project = workspace / "projects" / FOLDER
         self.project.mkdir(parents=True, exist_ok=True)
-        ctx = RenderContext(workspace, Settings(), mascot or load_mascot(workspace), (), load_pricing(workspace))
+        ctx = RenderContext(workspace, Settings(), mascot or load_mascot(workspace), (), load_pricing(workspace),
+                            load_style(workspace), load_visual_rules(workspace))
         plan = parse_plan(plan_data)
         self.jobs = JobBuilder(ctx, plan, seeds=itertools.count(1000).__next__).jobs(plan.units())
         self.store = StateStore.load(self.project)

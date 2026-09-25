@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from stickman.config_files import load_mascot
+from stickman.config_files import load_mascot, load_style, load_visual_rules
 from stickman.meter import Meter
 from stickman.plan.models import parse_plan
 from stickman.pricing import load_pricing
@@ -96,7 +96,8 @@ async def no_sleep(seconds):
 
 def run_once(workspace, project, plan, client):
     """What `stickman resume` does: recover, then render every planned or failed unit."""
-    ctx = RenderContext(workspace, Settings(), load_mascot(workspace), (), load_pricing(workspace))
+    ctx = RenderContext(workspace, Settings(), load_mascot(workspace), (), load_pricing(workspace),
+                       load_style(workspace), load_visual_rules(workspace))
     builder = JobBuilder(ctx, plan)
     store = StateStore.load(project)
     recover(store, builder.expected())

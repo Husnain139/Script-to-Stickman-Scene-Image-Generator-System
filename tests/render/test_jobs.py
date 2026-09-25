@@ -4,10 +4,12 @@ from datetime import date
 import pytest
 from PIL import Image
 
-from stickman.config_files import MascotConfig, load_mascot
+from stickman.config_files import MascotConfig, load_mascot, load_style, load_visual_rules
 from stickman.library import LibraryCharacter
 from stickman.plan.models import parse_plan
 from stickman.pricing import image_cost_usd, load_pricing
+from stickman.qc.fixes import retry_prompt
+from stickman.qc.vision import ExpectedPicture
 from stickman.render.jobs import JobBuilder, JobError, RenderContext, random_seed
 from stickman.render.recovery import ExpectedUnit
 from stickman.settings import ConfigError, Settings
@@ -17,7 +19,8 @@ DEV = "@cf/black-forest-labs/flux-2-dev"
 
 
 def context(workspace, mascot=None, library=()):
-    return RenderContext(workspace, Settings(), mascot or load_mascot(workspace), tuple(library), load_pricing(workspace))
+    return RenderContext(workspace, Settings(), mascot or load_mascot(workspace), tuple(library), load_pricing(workspace),
+                         load_style(workspace), load_visual_rules(workspace))
 
 
 def builder(workspace, plan_data, **kwargs):
@@ -102,3 +105,61 @@ def test_a_changed_reference_file_changes_the_fingerprint(tmp_path, plan_data):
 
 def test_random_seeds_fit_a_signed_32_bit_integer():
     assert all(0 <= random_seed() < 2**31 for _ in range(200))
+
+
+MASCOT_WITH_SHEET = MascotConfig(name="Everyman", identity="a stickman with three hair strokes",
+                                 sheet="library/mascot/sheet_v1.png", ref="library/mascot/ref_v1.png", seed=7,
+                                 style_version=1)
+
+
+def test_a_job_knows_its_unit_and_what_qc_expects(tmp_path, plan_data):
+    job = builder(tmp_path, plan_data).jobs(parse_plan(plan_data).units())[0]
+    assert job.unit.id == "001" and job.unit.image_prompt == "prompt for 001"
+    assert job.expected == ExpectedPicture("Idea 001", 1, "Everyman: 1")
+    assert job.vision_reference is None  # no mascot sheet before bootstrap (M5)
+    assert job.fixes.strict_clause == load_style(tmp_path).strict_clause
+    assert (job.fixes.props, job.fixes.locked, job.fixes.mascot_in_image_1) == ((), False, False)
+    assert job.fixes.identity == load_mascot(tmp_path).identity
+
+
+def test_expected_figures_add_up_over_the_units_characters(tmp_path, plan_data):
+    plan_data["scenes"][1]["units"][0]["characters"].append(
+        {"ref": "caveman_group", "action": "sitting", "emotion": "calm"})
+    job = builder(tmp_path, plan_data).jobs(parse_plan(plan_data).units())[1]
+    assert job.expected == ExpectedPicture("Idea 002a", 4, "Everyman: 1, Caveman group: 3")
+
+
+def test_the_mascot_sheet_goes_with_the_vision_check_of_mascot_units_once_it_exists(tmp_path, plan_data):
+    png(tmp_path / "library/mascot/ref_v1.png", (384, 512))
+    plan_data["scenes"][1]["units"][1]["characters"] = [{"ref": "caveman_group", "action": "sitting", "emotion": "calm"}]
+    jobs = builder(tmp_path, plan_data, mascot=MASCOT_WITH_SHEET).jobs(parse_plan(plan_data).units())
+    assert jobs[0].vision_reference.path == "library/mascot/ref_v1.png"
+    assert jobs[2].vision_reference is None  # 002b has no mascot
+    unapproved = MASCOT_WITH_SHEET.model_copy(update={"seed": None})
+    assert builder(tmp_path, plan_data, mascot=unapproved).jobs(parse_plan(plan_data).units())[0].vision_reference is None
+
+
+def test_the_mascot_is_in_image_1_when_the_anchor_and_its_sheet_are_sent(tmp_path, plan_data):
+    png(tmp_path / "library/style/anchor_v1_ref.png")
+    png(tmp_path / "library/mascot/ref_v1.png", (384, 512))
+    job = builder(tmp_path, plan_data, mascot=MASCOT_WITH_SHEET).jobs(parse_plan(plan_data).units())[0]
+    assert job.fixes.mascot_in_image_1 is True
+
+
+def test_a_retry_has_the_fixed_prompt_and_a_new_seed(tmp_path, plan_data):
+    plan_data["scenes"][0]["units"][0]["seed"] = 5  # pinned: a retry still uses a new seed (spec §7.5)
+    plan_data["scenes"][0]["units"][0]["props"] = ["wall clock"]
+    jobs_builder = builder(tmp_path, plan_data)
+    job = jobs_builder.jobs(parse_plan(plan_data).units())[0]
+    assert job.seed == 5
+    retry = jobs_builder.retry(job, ["text", "anatomy"])
+    assert retry.seed == 1002  # the next seed after the two unpinned units' 1000 and 1001
+    assert retry.prompt == retry_prompt("prompt for 001", ["text", "anatomy"], job.fixes)
+    assert (retry.unit, retry.fingerprint, retry.references, retry.stem) == (job.unit, job.fingerprint, job.references, job.stem)
+
+
+def test_a_job_for_one_unit_refuses_an_empty_prompt(tmp_path, plan_data):
+    jobs_builder = builder(tmp_path, plan_data)
+    unit = parse_plan(plan_data).units()[0].model_copy(update={"image_prompt": "  "})
+    with pytest.raises(JobError, match="no image_prompt for 001"):
+        jobs_builder.job(unit)
