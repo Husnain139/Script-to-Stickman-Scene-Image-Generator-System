@@ -103,3 +103,8 @@ def test_a_settings_file_that_is_not_utf8_is_a_config_error(tmp_path):
     path.write_bytes("account:\n  plan: free  # café\n".encode("cp1252"))
     with pytest.raises(ConfigError, match="not UTF-8"):
         load_settings(path)
+
+
+def test_the_vision_check_is_on_by_default_and_can_be_turned_off(tmp_path):
+    assert Settings().qc.vision is True
+    assert load_settings(write(tmp_path / "settings.yaml", "qc:\n  vision: false\n")).qc.vision is False

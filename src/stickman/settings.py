@@ -107,6 +107,7 @@ class BudgetSettings(_Section):
 
 
 class QCSettings(_Section):
+    vision: bool = True  # the vision check (spec §11.2); off leaves only the pixel checks
     near_white_lum: int = Field(215, ge=0, le=255)
     color_sat: float = Field(0.25, ge=0, le=1)
     max_color_fraction: float = Field(0.01, ge=0, le=1)

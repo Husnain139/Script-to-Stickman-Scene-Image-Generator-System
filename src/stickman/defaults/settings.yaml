@@ -47,6 +47,7 @@ budget:
   warn_ratio: 0.8
   expected_retry_rate: 0.25
 qc:
+  vision: true                # the vision check; false = pixel checks only (it costs about as much as a Klein 4B image)
   near_white_lum: 215
   color_sat: 0.25
   max_color_fraction: 0.01
