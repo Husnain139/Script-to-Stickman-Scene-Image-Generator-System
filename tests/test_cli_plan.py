@@ -301,3 +301,19 @@ def test_replan_uses_the_named_project(workspace, monkeypatch, sample_chat, fake
     result = replan(workspace, "006a", "-p", folder(workspace).name)
     assert result.exit_code == 0, result.output
     assert result.output.splitlines()[0] == f"Project: {folder(workspace).name}"
+
+
+def test_new_records_its_planning_calls_in_the_ledger(workspace, monkeypatch, sample_chat):
+    use_chat(monkeypatch, sample_chat)
+    assert new(workspace).exit_code == 0
+    entries = [json.loads(line) for line in (workspace / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(entries) == 7  # analyse, cut and 5 describe batches
+    assert {(e["kind"], e["billing"], e["project"]) for e in entries} == {("llm", "billed", folder(workspace).name)}
+
+
+def test_cloudflare_errors_on_the_console_mask_the_token(workspace, monkeypatch, fake_chat):
+    use_chat(monkeypatch, fake_chat([CFError(ErrorCategory.BAD_REQUEST, "rejected request from tok-secret")]))
+    result = new(workspace)
+    assert result.exit_code == 1
+    assert "rejected request from ***" in result.output
+    assert "tok-secret" not in result.output

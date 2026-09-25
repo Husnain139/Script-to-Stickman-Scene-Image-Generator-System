@@ -18,6 +18,8 @@ from stickman.cf.client import CloudflareClient
 from stickman.cf.errors import CFError, ErrorCategory
 from stickman.ingest.parse import parse_duration, parse_script
 from stickman.ingest.timing import build_timeline
+from stickman.ledger import LEDGER_FILE, Ledger
+from stickman.meter import Meter
 from stickman.plan.llm import PlanningError, StageRunner
 from stickman.plan.models import CastMember, PlanValidationError
 from stickman.plan.planner import (
@@ -29,6 +31,7 @@ from stickman.plan.planner import (
     replan_unit,
 )
 from stickman.plan.store import PlanChangedError, load_plan, to_document, update_unit, write_plan
+from stickman.pricing import load_pricing
 from stickman.project import ProjectError, check_unplanned, choose_project_dir, create_project, resolve_project, slugify
 from stickman.runlog import RunLog
 from stickman.settings import (
@@ -156,18 +159,25 @@ def _run_llm(
     token = cfg.secrets.cf_api_token.get_secret_value() if cfg.secrets else ""
     log = RunLog.for_project(directory, secrets=(token,))
     again = " Finished stages are cached, so running the same command again continues from there." if cached else ""
+    try:
+        pricing = load_pricing(cfg.workspace)
+    except ConfigError as exc:
+        _fail(str(exc), EXIT_CONFIG_ERROR)
+    # Every planning call goes in the ledger; the weekly budget never stops planning (spec §9.7 [M3]).
+    meter = Meter(project=directory.name, ledger=Ledger(cfg.workspace / LEDGER_FILE), pricing=pricing)
 
     async def go() -> T:
         async with build_client(cfg) as client:
             runner = StageRunner(
-                client, cfg.settings.llm, cfg.settings.retry, cache_dir=directory / ".cache" / "llm", log=log
+                client, cfg.settings.llm, cfg.settings.retry, cache_dir=directory / ".cache" / "llm", log=log,
+                meter=meter,
             )
             return await work(runner)
 
     try:
         return asyncio.run(go())
     except PlanningError as exc:
-        _fail(f"Planning failed: {exc}. Every attempt is logged in {log.path}.{again}", EXIT_USER_ERROR)
+        _fail(log.mask(f"Planning failed: {exc}. Every attempt is logged in {log.path}.{again}"), EXIT_USER_ERROR)
     except PlanValidationError as exc:
         _fail("The planned result failed validation (a bug): " + "; ".join(exc.errors[:5]), EXIT_USER_ERROR)
     except CFError as exc:
@@ -179,7 +189,7 @@ def _run_llm(
             )
         if exc.category is ErrorCategory.AUTH:
             _fail(TOKEN_HELP, EXIT_CONFIG_ERROR)
-        _fail(f"Cloudflare error: {exc}", EXIT_USER_ERROR)
+        _fail(log.mask(f"Cloudflare error: {exc}"), EXIT_USER_ERROR)
 
 
 def _load_planning(root: Path) -> tuple[AppConfig, PlanningContext]:

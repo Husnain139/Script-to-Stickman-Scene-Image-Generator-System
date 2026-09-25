@@ -776,6 +776,9 @@ free_daily_usd: 0.11      # 10,000 neurons × $0.011/1k
   - At or above `warn_ratio × weekly_usd`: warn once per run, in the CLI and on the review page.
   - Above `weekly_usd`: without `--force`, stop starting new calls, let in-flight calls finish, save state and print the budget message. With `--force`, continue with a visible warning.
 - **The free allocation:** estimates on the review page show *"up to $0.11 of today's usage may be covered by the free daily allocation"*. The ledger and budget always use the **gross** cost, which keeps them on the safe side.
+- **[M3]** Planning's LLM calls (`new`, `replan`) go in the ledger too. The weekly budget never stops them: a plan costs about $0.03, and `new` has no `--force`.
+  - The budget check applies to image calls.
+  - A run reads the week's spend from the ledger when it starts, and adds its own calls as they finish.
 
 ---
 
@@ -1081,6 +1084,10 @@ Cloudflare fixtures, generated images, neuron costs and the style verdict — is
 - **LLM planning failure:** handled per §6.1. Batches already cached are kept.
 - **Missing ffmpeg:** export fails with the command to install it.
 - **Logging:** every run writes `logs/run-*.jsonl` with one entry per API call: timestamp, category, model, parameters (prompt shortened to 300 characters, reference files by hash), time taken, HTTP status, error category, estimated cost and billing flag. The token is never logged.
+- **[M3] Log entries per attempt:** each API attempt gets its own entry, including attempts that are then retried.
+  - LLM entries also carry `cache_key`, `call` (the try within one validation attempt), `max_tokens`, `json_mode`, `billing`, `usd` and `request_id`.
+  - Image entries carry `unit`, `seed`, the size, `refs` (`path#sha256:…`), `billing`, `usd`, `neurons` and `request_id`.
+  - The token is also masked in console messages built from Cloudflare errors, and in errors kept in `state.json`.
 
 ---
 

@@ -17,13 +17,15 @@ from stickman.cf.client import LLMResult
 from stickman.cf.errors import CFError
 from stickman.cf.retry import with_retries
 from stickman.fsutil import safe_write
+from stickman.meter import Meter, Metered, billing_of
 from stickman.plan.jsonx import NoJSONError, error_path, extract_json, inline_schema
 from stickman.runlog import RunLog, shorten
 from stickman.settings import LLMSettings, RetrySettings
 
 M = TypeVar("M", bound=BaseModel)
 
-STAGE_MAX_TOKENS = 16384  # gpt-oss spends part of this on reasoning; only used tokens are billed
+STAGE_MAX_TOKENS = 16384  # the planner: gpt-oss spends part of this on reasoning; only used tokens are billed
+FALLBACK_MAX_TOKENS = 8192  # llama-3.3-70b fp8-fast has a 24k context; 8192 answered in the first live run
 RETRY_MESSAGE = "Your previous JSON had these errors:\n{errors}\nReturn corrected JSON only."
 PREVIOUS_REPLY_CHARS = 32000  # the whole previous reply: live describe replies ran to 7,390 chars
 
@@ -86,6 +88,7 @@ class StageRunner:
         cache_dir: Path | None,
         log: RunLog,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        meter: Meter | None = None,
     ) -> None:
         self._client = client
         self._llm = llm
@@ -93,6 +96,10 @@ class StageRunner:
         self._cache_dir = cache_dir
         self._log = log
         self._sleep = sleep
+        self._meter = meter if meter is not None else Meter(project="")
+
+    def max_tokens(self, model: str) -> int:
+        return STAGE_MAX_TOKENS if model == self._llm.planner_model else FALLBACK_MAX_TOKENS
 
     async def run(self, request: StageRequest[M], *, use_cache: bool = True) -> M:
         schema = inline_schema(request.schema)
@@ -114,23 +121,23 @@ class StageRunner:
         ):
             messages = base
             for attempt in (1, 2):
-                reply, latency = await self._call(request, model, messages, response_format, attempt)
+                metered, call = await self._call(request, model, messages, response_format, attempt, key)
+                reply = metered.result
                 stop = finish_reason(reply)
                 result, errors = self._parse(request, reply.text, stop=stop)
                 self._log.write(
-                    kind="llm",
-                    stage=request.stage,
-                    model=model,
-                    attempt=attempt,
+                    **self._entry(request, model, response_format, attempt, call, key),
                     ok=result is not None,
                     errors=errors,
                     finish_reason=stop,
                     reply_chars=len(reply.text),
-                    latency_s=round(latency, 2),
+                    latency_s=round(metered.latency_s, 2),
                     input_tokens=reply.input_tokens,
                     output_tokens=reply.output_tokens,
                     neurons=reply.neurons,
-                    prompt=shorten(request.user),
+                    usd=metered.usd,
+                    billing="billed",
+                    request_id=reply.request_id,
                 )
                 if result is not None:
                     self._write_cache(key, result)
@@ -143,6 +150,28 @@ class StageRunner:
                 ]
         raise PlanningError(request.stage, errors)
 
+    def _entry(
+        self,
+        request: StageRequest[Any],
+        model: str,
+        response_format: dict[str, Any] | None,
+        attempt: int,
+        call: int,
+        key: str,
+    ) -> dict[str, Any]:
+        """The fields every LLM log entry has (spec §16)."""
+        return {
+            "kind": "llm",
+            "stage": request.stage,
+            "model": model,
+            "attempt": attempt,
+            "call": call,
+            "cache_key": key,
+            "max_tokens": self.max_tokens(model),
+            "json_mode": response_format is not None,
+            "prompt": shorten(request.user),
+        }
+
     async def _call(
         self,
         request: StageRequest[Any],
@@ -150,35 +179,48 @@ class StageRunner:
         messages: list[dict[str, Any]],
         response_format: dict[str, Any] | None,
         attempt: int,
-    ) -> tuple[LLMResult, float]:
-        started = time.perf_counter()
-        try:
-            reply = await with_retries(
-                lambda: self._client.chat(
-                    model,
-                    messages,
-                    temperature=self._llm.temperature,
-                    max_tokens=STAGE_MAX_TOKENS,
-                    response_format=response_format,
-                ),
-                self._retry,
-                sleep=self._sleep,
-            )
-        except CFError as exc:
-            self._log.write(
-                kind="llm",
-                stage=request.stage,
-                model=model,
-                attempt=attempt,
-                ok=False,
-                error=str(exc.category),
-                status=exc.status,
-                message=shorten(exc.message),
-                prompt=shorten(request.user),
-                latency_s=round(time.perf_counter() - started, 2),
-            )
-            raise
-        return reply, time.perf_counter() - started
+        key: str,
+    ) -> tuple[Metered[LLMResult], int]:
+        """One validation attempt's API call, retried on rate limits and temporary errors.
+
+        Every call that fails is logged here; the one that answers is logged by run() (spec §16).
+        """
+        max_tokens = self.max_tokens(model)
+        estimate = self._meter.llm_estimate(model, sum(len(str(m["content"])) for m in messages), max_tokens)
+        calls = 0
+
+        async def once() -> Metered[LLMResult]:
+            nonlocal calls
+            calls += 1
+            started = time.perf_counter()
+            try:
+                return await self._meter.run(
+                    lambda: self._client.chat(
+                        model,
+                        messages,
+                        temperature=self._llm.temperature,
+                        max_tokens=max_tokens,
+                        response_format=response_format,
+                    ),
+                    kind="llm",
+                    model=model,
+                    estimate_usd=estimate,
+                    cost_of=lambda reply: self._meter.llm_cost(model, reply.input_tokens, reply.output_tokens),
+                )
+            except CFError as exc:
+                self._log.write(
+                    **self._entry(request, model, response_format, attempt, calls, key),
+                    ok=False,
+                    error=str(exc.category),
+                    status=exc.status,
+                    message=shorten(exc.message),
+                    billing=billing_of(exc),
+                    latency_s=round(time.perf_counter() - started, 2),
+                )
+                raise
+
+        metered = await with_retries(once, self._retry, sleep=self._sleep)
+        return metered, calls
 
     def _parse(
         self, request: StageRequest[M], text: str, *, stop: str | None = None
