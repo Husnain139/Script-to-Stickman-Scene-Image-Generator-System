@@ -1,6 +1,8 @@
 import asyncio
+import io
 import os
 import random
+import re
 
 import pytest
 
@@ -8,17 +10,19 @@ from stickman.config_files import load_mascot, load_style, load_visual_rules
 from stickman.meter import Meter
 from stickman.plan.models import parse_plan
 from stickman.pricing import load_pricing
+from stickman.qc.fixes import BACKGROUND_FIX
 from stickman.render import recovery, renderer, state
 from stickman.render.images import history_files, image_stem
 from stickman.render.jobs import JobBuilder, RenderContext
 from stickman.render.recovery import recover
 from stickman.render.renderer import Renderer
-from stickman.render.state import StateStore
+from stickman.render.state import StateStore, needs_work
 from stickman.runlog import RunLog
-from stickman.settings import RetrySettings, Settings
+from stickman.settings import QCSettings, RetrySettings, Settings
 
 UNITS = 90
 KILLS = 4
+VISION = "@cf/qwen/qwen3.8-27b"
 
 
 class Kill(BaseException):
@@ -95,15 +99,15 @@ async def no_sleep(seconds):
 
 
 def run_once(workspace, project, plan, client):
-    """What `stickman resume` does: recover, then render every planned or failed unit."""
+    """What `stickman resume` does: recover, then take up every unit that needs work (state.needs_work)."""
     ctx = RenderContext(workspace, Settings(), load_mascot(workspace), (), load_pricing(workspace),
-                       load_style(workspace), load_visual_rules(workspace))
+                        load_style(workspace), load_visual_rules(workspace))
     builder = JobBuilder(ctx, plan)
     store = StateStore.load(project)
     recover(store, builder.expected())
-    todo = [unit for unit in plan.units() if store.unit(unit.id).status in ("planned", "failed")]
-    render = Renderer(client, store, Meter(project=project.name), retry=RetrySettings(), concurrency=4,
-                      log=RunLog(None), sleep=no_sleep)
+    todo = [unit for unit in plan.units() if needs_work(store.unit(unit.id))]
+    render = Renderer(client, store, Meter(project=project.name), builder, qc=QCSettings(), vision_model=VISION,
+                      retry=RetrySettings(), concurrency=4, log=RunLog(None), sleep=no_sleep)
     asyncio.run(render.run(builder.jobs(todo)))
 
 
@@ -123,10 +127,21 @@ def kills_in_recovery(rng):
     return [rng.randint(5, 120), 1, 2, 3]
 
 
+def retried_units(plan):
+    """Every fifth unit's first image has a filled background, so it fails QC and gets one retry."""
+    return {unit.id for index, unit in enumerate(plan.units()) if index % 5 == 0}
+
+
+def to_jpeg(image):
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=90)
+    return buffer.getvalue()
+
+
 @pytest.mark.parametrize("schedule", [random_kills, kills_in_recovery], ids=["random", "in_recovery"])
 @pytest.mark.parametrize("seed", range(6))
 def test_resume_after_kills_finishes_with_no_lost_or_duplicate_images(
-    tmp_path, monkeypatch, fake_images, jpeg, seed, schedule
+    tmp_path, monkeypatch, fake_images, jpeg, drawings, vision, seed, schedule
 ):
     rng = random.Random(seed)
     killer = Killer()
@@ -135,7 +150,19 @@ def test_resume_after_kills_finishes_with_no_lost_or_duplicate_images(
     project = tmp_path / "projects" / "2026-09-25_synthetic"
     project.mkdir(parents=True)
     plan = synthetic_plan()
-    client = fake_images(lambda call: killer.tick() or jpeg)  # killed while the request is out
+    retried = retried_units(plan)
+    filled = to_jpeg(drawings.filled_background())
+
+    def image(call):
+        killer.tick()  # killed while the request is out
+        unit_id = re.search(r"prompt for (\w+)", call["prompt"]).group(1)
+        return filled if unit_id in retried and BACKGROUND_FIX not in call["prompt"] else jpeg
+
+    def check(model, messages):
+        killer.tick()  # killed while the vision call is out
+        return vision.passing(model, messages)
+
+    client = fake_images(image, chat=check)
     arms = schedule(rng)
     kills = 0
     while True:
@@ -151,12 +178,19 @@ def test_resume_after_kills_finishes_with_no_lost_or_duplicate_images(
     history = history_files(project)
     for unit in plan.units():
         entry = saved.units[unit.id]
+        want = [1, 2] if unit.id in retried else [1]
         assert entry.status == "generated", (unit.id, entry.status)
-        assert [version.v for version in entry.versions] == [1], unit.id
-        assert entry.current_version == 1
-        assert sorted(history[unit.id]) == [1], unit.id
+        assert [version.v for version in entry.versions] == want, unit.id
+        assert entry.current_version == want[-1], unit.id
+        assert all(version.qc is not None for version in entry.versions), unit.id
+        assert entry.versions[-1].qc.passed, unit.id
+        if unit.id in retried:
+            first, second = entry.versions
+            assert first.qc.reason == "background_filled", unit.id
+            assert (second.retry_of, second.retry_reason) == (1, "background_filled"), unit.id
+        assert sorted(history[unit.id]) == want, unit.id
         current = project / "images" / f"{image_stem(unit.id, unit.start)}.png"
-        assert current.read_bytes() == history[unit.id][1].read_bytes(), unit.id
+        assert current.read_bytes() == history[unit.id][want[-1]].read_bytes(), unit.id
     assert set(history) == {unit.id for unit in plan.units()}
     assert len(list((project / "images").glob("*.png"))) == UNITS
     assert not list(project.rglob("*.tmp"))
