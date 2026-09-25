@@ -12,6 +12,13 @@ from stickman.runlog import RunLog
 from stickman.settings import LLMSettings, RetrySettings
 
 
+@pytest.fixture(autouse=True)
+def _plain_console(monkeypatch):
+    """Rich colours CLI output when FORCE_COLOR is set in the user's shell; assertions compare plain text."""
+    for name in ("FORCE_COLOR", "TTY_COMPATIBLE", "TTY_INTERACTIVE"):
+        monkeypatch.delenv(name, raising=False)
+
+
 class FakeChat:
     """Stands in for CloudflareClient (chat() and `async with`).
 
