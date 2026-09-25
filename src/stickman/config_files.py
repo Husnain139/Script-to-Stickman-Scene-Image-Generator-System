@@ -54,7 +54,8 @@ class VisualRules(_ConfigFile):
     rules: list[str]
 
 
-def _load(model: type[C], workspace: Path, name: str) -> C:
+def load_config_file(model: type[C], workspace: Path, name: str) -> C:
+    """config/<name> validated as `model`; the packaged default when the file is missing."""
     path = workspace / "config" / name
     text = read_config_text(path) if path.exists() else default_config_text(name)
     try:
@@ -71,12 +72,12 @@ def _load(model: type[C], workspace: Path, name: str) -> C:
 
 
 def load_style(workspace: Path) -> StyleConfig:
-    return _load(StyleConfig, workspace, "style.yaml")
+    return load_config_file(StyleConfig, workspace, "style.yaml")
 
 
 def load_mascot(workspace: Path) -> MascotConfig:
-    return _load(MascotConfig, workspace, "mascot.yaml")
+    return load_config_file(MascotConfig, workspace, "mascot.yaml")
 
 
 def load_visual_rules(workspace: Path) -> VisualRules:
-    return _load(VisualRules, workspace, "visual_rules.yaml")
+    return load_config_file(VisualRules, workspace, "visual_rules.yaml")
