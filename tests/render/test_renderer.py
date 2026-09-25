@@ -1,6 +1,9 @@
 import asyncio
+import io
 import itertools
 import json
+import re
+from collections import Counter
 
 import pytest
 from PIL import Image
@@ -14,12 +17,15 @@ from stickman.plan.models import parse_plan
 from stickman.pricing import load_pricing
 from stickman.render.jobs import JobBuilder, RenderContext
 from stickman.render.renderer import Renderer, StopReason
+from stickman.render.rewrite import SOFTEN_PREFIX, RewriteFailed
 from stickman.render.state import StateStore
+from stickman.render.summary import review_reason
 from stickman.runlog import RunLog
-from stickman.settings import BudgetSettings, RetrySettings, Settings
+from stickman.settings import BudgetSettings, QCSettings, RetrySettings, Settings
 
 FOLDER = "2026-09-25_demo"
 KLEIN_4B = "@cf/black-forest-labs/flux-2-klein-4b"
+VISION = "@cf/qwen/qwen3.8-27b"
 IMAGE_USD = 207.59 * 0.011 / 1000
 TRANSIENT = CFError(ErrorCategory.TRANSIENT, "bad gateway", status=502)
 
@@ -36,20 +42,30 @@ async def slow(data, seconds=0.01):
 class Run:
     """A renderer over plan_data's three units: 001, 002a and 002b."""
 
-    def __init__(self, workspace, plan_data, client, *, mascot=None, budget=None, concurrency=4, retry=None):
+    def __init__(self, workspace, plan_data, client, *, mascot=None, budget=None, concurrency=4, retry=None,
+                 qc=None, rewriter=None):
         self.project = workspace / "projects" / FOLDER
         self.project.mkdir(parents=True, exist_ok=True)
         ctx = RenderContext(workspace, Settings(), mascot or load_mascot(workspace), (), load_pricing(workspace),
                             load_style(workspace), load_visual_rules(workspace))
         plan = parse_plan(plan_data)
-        self.jobs = JobBuilder(ctx, plan, seeds=itertools.count(1000).__next__).jobs(plan.units())
+        self.builder = JobBuilder(ctx, plan, seeds=itertools.count(1000).__next__)
+        self.jobs = self.builder.jobs(plan.units())
         self.store = StateStore.load(self.project)
         self.ledger = Ledger(workspace / "ledger.jsonl")
         self.meter = Meter(project=FOLDER, ledger=self.ledger, budget=budget, pricing=ctx.pricing)
         self.log_path = self.project / "logs" / "run.jsonl"
         self.client = client
-        self.renderer = Renderer(client, self.store, self.meter, retry=retry or RetrySettings(), concurrency=concurrency,
-                                 log=RunLog(self.log_path, secrets=("tok-secret",)), sleep=no_sleep)
+        self.qc = qc or QCSettings()
+        self.retry = retry or RetrySettings()
+        self.concurrency = concurrency
+        self.rewriter = rewriter
+        self.renderer = self.make_renderer(client)
+
+    def make_renderer(self, client):
+        return Renderer(client, self.store, self.meter, self.builder, qc=self.qc, vision_model=VISION,
+                        retry=self.retry, concurrency=self.concurrency,
+                        log=RunLog(self.log_path, secrets=("tok-secret",)), rewriter=self.rewriter, sleep=no_sleep)
 
     def go(self, jobs=None):
         return asyncio.run(self.renderer.run(self.jobs if jobs is None else jobs))
@@ -59,6 +75,44 @@ class Run:
 
     def log(self):
         return [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
+
+
+def jpeg_of(image):
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=90)
+    return buffer.getvalue()
+
+
+def prompt_text(messages):
+    return messages[0]["content"][0]["text"]
+
+
+def scripted(vision, per_unit):
+    """Vision replies per unit, one per check in order (a dict of report changes each); then passing."""
+    left = {unit: list(replies) for unit, replies in per_unit.items()}
+
+    def reply(model, messages):
+        unit = re.search(r"Expected: Idea (\w+)\.", prompt_text(messages)).group(1)
+        changes = left.get(unit, [])
+        extra = changes.pop(0) if changes else {}
+        return vision.reply(**{"character_count": vision.figures(messages), **extra})
+
+    return reply
+
+
+class FakeRewriter:
+    def __init__(self, plan_data):
+        self.units = {unit.id: unit for unit in parse_plan(plan_data).units()}
+        self.calls = []
+
+    async def soften(self, unit_id, notes):
+        self.calls.append(("soften", unit_id, notes))
+        return self.units[unit_id].model_copy(update={
+            "softened": True, "softened_reason": SOFTEN_PREFIX + "symbolic", "image_prompt": f"softened prompt for {unit_id}"})
+
+    async def redesign(self, unit_id, notes):
+        self.calls.append(("redesign", unit_id, notes))
+        return self.units[unit_id].model_copy(update={"image_prompt": f"redesigned prompt for {unit_id}"})
 
 
 def test_every_unit_gets_one_version_its_history_file_and_its_current_image(tmp_path, plan_data, fake_images):
@@ -75,9 +129,11 @@ def test_every_unit_gets_one_version_its_history_file_and_its_current_image(tmp_
     assert history.startswith(b"\x89PNG")
     assert (run.project / "images" / "002a_00-04.0.png").read_bytes() == history
     assert StateStore.load(run.project).state.units["002a"].versions == unit.versions
+    assert version.qc.passed and version.qc.reason is None
     entries = list(run.ledger.entries())
-    assert sorted(e.unit for e in entries) == ["001", "002a", "002b"]
-    assert {(e.kind, e.billing, e.neurons) for e in entries} == {("image", "billed", 207.59)}
+    assert Counter(e.kind for e in entries) == {"image": 3, "vision": 3}
+    assert {(e.kind, e.billing, e.neurons) for e in entries} == {("image", "billed", 207.59), ("vision", "billed", 110.0)}
+    assert sorted(e.unit for e in entries if e.kind == "image") == ["001", "002a", "002b"]
 
 
 def test_requests_carry_the_job_and_at_most_concurrency_run_at_once(tmp_path, plan_data, fake_images, jpeg):
@@ -105,7 +161,7 @@ def test_generating_is_saved_before_the_request(tmp_path, plan_data, fake_images
 def test_each_api_call_is_logged(tmp_path, plan_data, fake_images, jpeg):
     run = Run(tmp_path, plan_data, fake_images([TRANSIENT, jpeg]))
     run.go(run.jobs[:1])
-    first, second = run.log()
+    first, second = [e for e in run.log() if e["kind"] == "image"]
     assert (first["ok"], first["error"], first["status"], first["billing"]) == (False, "transient", 502, "not_billed")
     assert (second["ok"], second["billing"], second["neurons"], second["request_id"]) == (True, "billed", 207.59, "req-2")
     assert all(e["kind"] == "image" and e["unit"] == "001" and e["seed"] == 1000 and e["prompt"] == "prompt for 001"
@@ -118,8 +174,10 @@ def test_a_daily_limit_stops_new_requests_and_lets_running_ones_finish(tmp_path,
     client = fake_images(lambda call: daily if call["prompt"] == "prompt for 001" else slow(jpeg))
     run = Run(tmp_path, plan_data, client, concurrency=2)
     assert run.go().stop is StopReason.DAILY_LIMIT
-    assert run.statuses() == {"001": "planned", "002a": "generated", "002b": "planned"}
+    # 002a's image request was already out, so it finishes and its image is kept; its check is a new request.
+    assert run.statuses() == {"001": "planned", "002a": "planned", "002b": "planned"}
     assert [call["prompt"] for call in client.calls] == ["prompt for 001", "prompt for 002a"]
+    assert [v.qc for v in run.store.unit("002a").versions] == [None]
 
 
 def test_a_rejected_token_stops_the_run(tmp_path, plan_data, fake_images):
@@ -130,7 +188,7 @@ def test_a_rejected_token_stops_the_run(tmp_path, plan_data, fake_images):
     assert len(client.calls) == 1
 
 
-@pytest.mark.parametrize("category", [ErrorCategory.BAD_REQUEST, ErrorCategory.REFUSED])
+@pytest.mark.parametrize("category", [ErrorCategory.BAD_REQUEST])
 def test_a_rejected_request_fails_only_its_unit(tmp_path, plan_data, fake_images, jpeg, category):
     rejected = CFError(category, "no: tok-secret", status=400)
     run = Run(tmp_path, plan_data, fake_images(lambda call: rejected if call["prompt"] == "prompt for 001" else jpeg))
@@ -154,7 +212,7 @@ def test_refusals_and_bad_requests_never_trip_the_breaker(tmp_path, plan_data, f
     run = Run(tmp_path, plan_data, fake_images(lambda call: next(errors)), concurrency=1,
               retry=RetrySettings(circuit_breaker=1))
     assert run.go().stop is None
-    assert set(run.statuses().values()) == {"failed"}
+    assert set(run.statuses().values()) <= {"failed", "needs_review"}  # no rewriter, so a refused unit goes to review
 
 
 def test_a_success_resets_the_breaker(tmp_path, plan_data, fake_images, jpeg):
@@ -170,7 +228,9 @@ def test_the_weekly_budget_stops_new_requests(tmp_path, plan_data, fake_images):
     result = run.go()
     assert result.stop is StopReason.BUDGET
     assert "over the weekly budget" in result.detail
-    assert run.statuses() == {"001": "generated", "002a": "planned", "002b": "planned"}
+    # 001's image fits the budget, but its check's reservation doesn't: the image is kept unchecked.
+    assert run.statuses() == {"001": "planned", "002a": "planned", "002b": "planned"}
+    assert [v.qc for v in run.store.unit("001").versions] == [None]
     assert len(client.calls) == 1
 
 
@@ -218,6 +278,9 @@ def test_reference_images_are_sent_in_slot_order_and_recorded(tmp_path, plan_dat
     assert [ref.split("#")[0] for ref in version.refs] == ["library/style/anchor_v1_ref.png", "library/mascot/ref_v1.png"]
     assert all(ref.split("#")[1].startswith("sha256:") for ref in version.refs)
     assert run.log()[0]["refs"] == version.refs
+    [check] = client.chat_calls
+    assert len(check["messages"][0]["content"]) == 3
+    assert "and the reference character (the second image)" in prompt_text(check["messages"])
 
 
 def test_a_token_across_a_cut_is_masked_before_the_message_is_shortened(tmp_path, plan_data, fake_images, jpeg):
@@ -237,3 +300,203 @@ def test_the_stop_detail_is_masked(tmp_path, plan_data, fake_images, category):
     result = run.go()
     assert result.stop is not None
     assert result.detail == "refused for ***"
+
+
+def test_the_vision_check_sees_the_image_and_what_the_unit_should_show(tmp_path, plan_data, fake_images):
+    client = fake_images()
+    run = Run(tmp_path, plan_data, client)
+    run.go(run.jobs[:1])
+    [call] = client.chat_calls
+    assert (call["model"], call["max_tokens"]) == (VISION, 2048)
+    text, image = call["messages"][0]["content"]
+    assert "Expected: Idea 001.\nExpected figures: 1 (Everyman: 1).\n" in text["text"]
+    assert image["image_url"]["url"].startswith("data:image/png;base64,")
+    [entry] = [e for e in run.log() if e["kind"] == "vision"]
+    assert (entry["ok"], entry["attempt"], entry["images"], entry["neurons"], entry["billing"]) == (True, 1, 1, 110.0, "billed")
+    assert "base64" not in json.dumps(entry)
+    unit = run.store.unit("001")
+    assert unit.versions[0].qc.vision.matches_visual_idea == 4
+
+
+def test_a_text_failure_is_retried_with_the_strict_clause_first_and_a_new_seed(tmp_path, plan_data, fake_images, vision):
+    client = fake_images(chat=scripted(vision, {"001": [{"has_text": True, "text_seen": "ZZZ"}]}))
+    run = Run(tmp_path, plan_data, client)
+    run.go(run.jobs[:1])
+    first, second = client.calls
+    strict = load_style(tmp_path).strict_clause.strip()
+    assert (first["prompt"], first["seed"]) == ("prompt for 001", 1000)
+    assert second["prompt"].startswith(strict + "\n\nprompt for 001") and second["seed"] == 1003
+    unit = run.store.unit("001")
+    v1, v2 = unit.versions
+    assert (v1.qc.reason, v2.retry_of, v2.retry_reason, v2.qc.passed) == ("text", 1, "text", True)
+    assert (unit.status, unit.current_version, unit.error) == ("generated", 2, None)
+    current = (run.project / "images" / "001_00-00.0.png").read_bytes()
+    assert current == (run.project / v2.file).read_bytes()
+
+
+def test_after_qc_max_retries_the_best_version_is_kept_for_review(tmp_path, plan_data, fake_images, vision):
+    replies = [{"has_text": True, "matches_visual_idea": 3}, {"has_text": True, "matches_visual_idea": 5},
+               {"has_text": True, "matches_visual_idea": 4}]
+    client = fake_images(chat=scripted(vision, {"001": replies}))
+    run = Run(tmp_path, plan_data, client)
+    run.go(run.jobs[:1])
+    unit = run.store.unit("001")
+    assert (unit.status, unit.current_version, len(unit.versions), len(client.calls)) == ("needs_review", 2, 3, 3)
+    assert client.calls[2]["prompt"].count(load_style(tmp_path).strict_clause.strip()) == 1  # once, however many text retries
+    assert review_reason(unit) == "text"
+    assert (run.project / "images" / "001_00-00.0.png").read_bytes() == (run.project / unit.versions[1].file).read_bytes()
+
+
+def test_an_empty_image_skips_the_vision_check_and_gets_only_a_new_seed(tmp_path, plan_data, fake_images, drawings, jpeg):
+    client = fake_images([jpeg_of(drawings.white()), jpeg])
+    run = Run(tmp_path, plan_data, client)
+    run.go(run.jobs[:1])
+    assert [call["prompt"] for call in client.calls] == ["prompt for 001", "prompt for 001"]
+    assert client.calls[0]["seed"] != client.calls[1]["seed"]
+    assert len(client.chat_calls) == 1  # only the second image was worth a vision call
+    v1 = run.store.unit("001").versions[0]
+    assert (v1.qc.reason, v1.qc.vision) == ("empty", None)
+    assert run.renderer.softened == [] and run.store.unit("001").status == "generated"
+
+
+def test_a_dark_image_is_softened_once_then_left_for_review(tmp_path, plan_data, fake_images, drawings):
+    black = jpeg_of(drawings.all_black())
+    rewriter = FakeRewriter(plan_data)
+    client = fake_images(lambda call: black)
+    run = Run(tmp_path, plan_data, client, rewriter=rewriter)
+    run.go(run.jobs[:1])
+    assert rewriter.calls == [("soften", "001", "")]
+    assert [call["prompt"] for call in client.calls] == ["prompt for 001", "softened prompt for 001"]
+    unit = run.store.unit("001")
+    v1, v2 = unit.versions
+    assert (v2.retry_of, v2.retry_reason) == (1, "safety_filtered")
+    assert v1.fingerprint != v2.fingerprint  # the soften changed the unit
+    assert (unit.status, unit.current_version) == ("needs_review", 2)
+    assert run.renderer.softened == ["001"]
+
+
+def test_a_softened_image_that_comes_out_clean_passes(tmp_path, plan_data, fake_images, drawings, jpeg):
+    client = fake_images([jpeg_of(drawings.all_black()), jpeg])
+    run = Run(tmp_path, plan_data, client, rewriter=FakeRewriter(plan_data))
+    run.go(run.jobs[:1])
+    assert (run.store.unit("001").status, run.store.unit("001").current_version) == ("generated", 2)
+
+
+def test_a_refused_request_is_softened_and_a_second_refusal_is_left_for_review(tmp_path, plan_data, fake_images):
+    refused = CFError(ErrorCategory.REFUSED, "flagged by the safety system tok-secret", status=400)
+    rewriter = FakeRewriter(plan_data)
+    client = fake_images([refused, refused])
+    run = Run(tmp_path, plan_data, client, rewriter=rewriter)
+    assert run.go(run.jobs[:1]).stop is None
+    assert [call["prompt"] for call in client.calls] == ["prompt for 001", "softened prompt for 001"]
+    unit = run.store.unit("001")
+    assert (unit.status, unit.versions, unit.error) == ("needs_review", [], "refused: flagged by the safety system ***")
+    assert review_reason(unit) == "safety_filtered"
+
+
+def test_a_locked_unit_is_never_rewritten(tmp_path, plan_data, fake_images, drawings):
+    plan_data["scenes"][0]["units"][0]["prompt_locked"] = True
+    rewriter = FakeRewriter(plan_data)
+    client = fake_images(lambda call: jpeg_of(drawings.all_black()))
+    run = Run(tmp_path, plan_data, client, rewriter=rewriter)
+    run.go(run.jobs[:1])
+    assert rewriter.calls == [] and len(client.calls) == 1
+    assert run.store.unit("001").status == "needs_review"
+
+
+def test_a_weak_idea_gets_a_new_seed_then_a_redesign(tmp_path, plan_data, fake_images, vision):
+    weak = [{"matches_visual_idea": 2, "notes": "the fire is missing"}, {"matches_visual_idea": 2, "notes": "still no fire"}]
+    rewriter = FakeRewriter(plan_data)
+    client = fake_images(chat=scripted(vision, {"001": weak}))
+    run = Run(tmp_path, plan_data, client, rewriter=rewriter)
+    run.go(run.jobs[:1])
+    assert [call["prompt"] for call in client.calls] == ["prompt for 001", "prompt for 001", "redesigned prompt for 001"]
+    assert rewriter.calls == [("redesign", "001", "still no fire")]
+    unit = run.store.unit("001")
+    assert (unit.status, unit.current_version) == ("generated", 3)
+
+
+def test_a_checker_that_never_answers_in_json_leaves_the_unit_for_review(tmp_path, plan_data, fake_images):
+    client = fake_images(chat=lambda model, messages: "It looks fine to me.")
+    run = Run(tmp_path, plan_data, client)
+    run.go(run.jobs[:1])
+    assert (len(client.calls), len(client.chat_calls)) == (1, 2)
+    retry = client.chat_calls[1]["messages"]
+    assert retry[1] == {"role": "assistant", "content": "It looks fine to me."}
+    assert "the reply contains no JSON object" in retry[2]["content"]
+    unit = run.store.unit("001")
+    qc = unit.versions[0].qc
+    assert (unit.status, qc.reason, qc.vision_error) == ("needs_review", "vision_error",
+                                                        "invalid reply: the reply contains no JSON object")
+
+
+def test_a_rejected_check_is_a_vision_error_not_a_failed_unit(tmp_path, plan_data, fake_images):
+    rejected = CFError(ErrorCategory.BAD_REQUEST, "image too large", status=400)
+    run = Run(tmp_path, plan_data, fake_images(chat=lambda model, messages: rejected))
+    run.go(run.jobs[:1])
+    assert run.store.unit("001").versions[0].qc.vision_error == "bad_request: image too large"
+    assert run.store.unit("001").status == "needs_review"
+
+
+def test_the_daily_limit_during_a_check_stops_the_run_and_the_next_run_checks_the_same_image(tmp_path, plan_data, fake_images):
+    daily = CFError(ErrorCategory.DAILY_LIMIT, "daily free allocation", status=429)
+    run = Run(tmp_path, plan_data, fake_images(chat=lambda model, messages: daily), concurrency=1)
+    assert run.go(run.jobs[:1]).stop is StopReason.DAILY_LIMIT
+    unit = run.store.unit("001")
+    assert (unit.status, [v.qc for v in unit.versions]) == ("planned", [None])
+    later = fake_images()
+    asyncio.run(run.make_renderer(later).run(run.jobs[:1]))
+    assert (later.calls, len(later.chat_calls)) == ([], 1)
+    assert (run.store.unit("001").status, run.store.unit("001").current_version) == ("generated", 1)
+
+
+def test_a_stop_mid_chain_continues_the_chain_next_run(tmp_path, plan_data, fake_images, vision, jpeg):
+    daily = CFError(ErrorCategory.DAILY_LIMIT, "daily free allocation", status=429)
+    client = fake_images([jpeg, daily], chat=scripted(vision, {"001": [{"has_text": True}]}))
+    run = Run(tmp_path, plan_data, client, concurrency=1)
+    assert run.go(run.jobs[:1]).stop is StopReason.DAILY_LIMIT
+    assert run.store.unit("001").status == "planned"
+    later = fake_images()
+    asyncio.run(run.make_renderer(later).run(run.jobs[:1]))
+    [retry] = later.calls
+    assert retry["prompt"].startswith(load_style(tmp_path).strict_clause.strip())
+    unit = run.store.unit("001")
+    assert ([v.v for v in unit.versions], unit.versions[1].retry_of, unit.status) == ([1, 2], 1, "generated")
+
+
+def test_temporary_errors_of_checks_count_toward_the_breaker(tmp_path, plan_data, fake_images):
+    transient = CFError(ErrorCategory.TRANSIENT, "bad gateway", status=502)
+    run = Run(tmp_path, plan_data, fake_images(chat=lambda model, messages: transient), concurrency=1,
+              retry=RetrySettings(transient_max=3, circuit_breaker=4))
+    assert run.go().stop is StopReason.CIRCUIT_BREAKER
+
+
+def test_a_failed_rewrite_leaves_the_unit_for_review_with_the_reason(tmp_path, plan_data, fake_images, drawings):
+    class Broken(FakeRewriter):
+        async def soften(self, unit_id, notes):
+            raise RewriteFailed("plan.yaml changed on disk during the rewrite, so nothing was written")
+
+    run = Run(tmp_path, plan_data, fake_images(lambda call: jpeg_of(drawings.all_black())), rewriter=Broken(plan_data))
+    run.go(run.jobs[:1])
+    unit = run.store.unit("001")
+    assert unit.status == "needs_review" and unit.error.startswith("rewrite failed: plan.yaml changed on disk")
+
+
+def test_an_image_made_before_qc_is_checked_without_a_new_request(tmp_path, plan_data, fake_images):
+    run = Run(tmp_path, plan_data, fake_images(), qc=QCSettings(vision=False))
+    run.go(run.jobs[:1])
+    run.store.unit("001").versions[0].qc = None  # as M3 left it
+    run.store.save()
+    run.qc = QCSettings()  # the next run has the vision check on
+    later = fake_images()
+    asyncio.run(run.make_renderer(later).run(run.jobs[:1]))
+    assert later.calls == [] and len(later.chat_calls) == 1
+    assert run.store.unit("001").versions[0].qc.passed
+
+
+def test_with_the_vision_check_off_only_the_pixel_checks_run(tmp_path, plan_data, fake_images):
+    client = fake_images()
+    run = Run(tmp_path, plan_data, client, qc=QCSettings(vision=False))
+    run.go()
+    assert client.chat_calls == [] and set(run.statuses().values()) == {"generated"}
+    assert run.store.unit("001").versions[0].qc.vision is None

@@ -7,6 +7,7 @@ import functools
 import inspect
 import io
 import json
+import re
 import types
 
 import pytest
@@ -204,18 +205,47 @@ def fake_chat():
     return FakeChat
 
 
+GOOD_REPORT = {"has_text": False, "text_seen": "", "style_ok": True, "anatomy_ok": True, "watermark_like": False,
+               "character_count": 1, "matches_visual_idea": 4, "mascot_matches_sheet": None, "notes": ""}
+
+
+def vision_reply(**changes):
+    """A vision report the way qwen writes it: a blank line, then fenced JSON (M0)."""
+    return "\n\n```json\n" + json.dumps({**GOOD_REPORT, **changes}) + "\n```"
+
+
+def expected_figures(messages):
+    text = next(part["text"] for part in messages[0]["content"] if part["type"] == "text")
+    return int(re.search(r"Expected figures: (\d+)", text).group(1))
+
+
+def passing_vision(model, messages):
+    return vision_reply(character_count=expected_figures(messages))
+
+
+@pytest.fixture
+def vision():
+    return types.SimpleNamespace(reply=vision_reply, passing=passing_vision, figures=expected_figures)
+
+
 class FakeImages:
-    """Stands in for CloudflareClient.generate_image (and `async with`).
+    """Stands in for CloudflareClient.generate_image and chat() (and `async with`).
 
     `outcomes` is None (every call gets a small JPEG), a list (one outcome per call, in order), or a
     function `(call) -> outcome`. An outcome is image bytes, an exception to raise, or an awaitable
     that gives image bytes (a slow request).
+
+    `chat` is a function `(model, messages) -> reply` for the vision model. A reply is text, an
+    LLMResult, an exception to raise, or an awaitable giving one of those. The default passes every
+    vision check, with the figure count the prompt expects.
     """
 
-    def __init__(self, outcomes=None, *, neurons=207.59):
+    def __init__(self, outcomes=None, *, neurons=207.59, chat=None):
         self._outcomes = list(outcomes) if isinstance(outcomes, (list, tuple)) else outcomes
         self._neurons = neurons
+        self._chat = chat or passing_vision
         self.calls = []
+        self.chat_calls = []
         self.active = 0
         self.max_active = 0
 
@@ -242,6 +272,21 @@ class FakeImages:
         if isinstance(outcome, BaseException):
             raise outcome
         return ImageResult(image_bytes=outcome, neurons=self._neurons, request_id=f"req-{number}")
+
+    async def chat(self, model, messages, *, temperature=0.4, max_tokens=4096, response_format=None):
+        self.chat_calls.append({"model": model, "messages": messages, "temperature": temperature,
+                                "max_tokens": max_tokens, "response_format": response_format})
+        await asyncio.sleep(0)
+        reply = self._chat(model, messages)
+        if inspect.isawaitable(reply):
+            reply = await reply
+        if isinstance(reply, BaseException):
+            raise reply
+        if isinstance(reply, LLMResult):
+            return reply
+        return LLMResult(text=reply, input_tokens=1300, output_tokens=400,
+                         raw={"choices": [{"finish_reason": "stop"}]}, neurons=110.0,
+                         request_id=f"chat-{len(self.chat_calls)}")
 
     def _next(self, call):
         if self._outcomes is None:
