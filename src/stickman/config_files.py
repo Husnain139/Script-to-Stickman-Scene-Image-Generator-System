@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from stickman.settings import ConfigError, default_config_text
+from stickman.settings import ConfigError, default_config_text, read_config_text
 
 C = TypeVar("C", bound=BaseModel)
 
@@ -52,16 +52,6 @@ class MascotConfig(_ConfigFile):
 
 class VisualRules(_ConfigFile):
     rules: list[str]
-
-
-def read_config_text(path: Path) -> str:
-    """A hand-edited YAML file's text. A file that can't be read is a ConfigError naming it (exit 3)."""
-    try:
-        return path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise ConfigError(f"{path}: not UTF-8 text ({exc}). Save it as UTF-8.") from exc
-    except OSError as exc:
-        raise ConfigError(f"{path}: can't read it: {exc.strerror or exc}") from exc
 
 
 def _load(model: type[C], workspace: Path, name: str) -> C:

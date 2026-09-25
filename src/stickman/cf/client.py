@@ -23,11 +23,14 @@ class LLMResult:
     output_tokens: int | None
     raw: dict[str, Any]
     neurons: float | None = None
+    request_id: str | None = None
 
 
 @dataclass(frozen=True)
 class ImageResult:
     image_bytes: bytes
+    neurons: float | None = None
+    request_id: str | None = None
 
 
 class CloudflareClient:
@@ -99,6 +102,7 @@ class CloudflareClient:
             output_tokens=usage.get("completion_tokens"),
             raw=data,
             neurons=_neurons(response, usage),
+            request_id=_request_id(response),
         )
 
     async def generate_image(
@@ -131,7 +135,11 @@ class CloudflareClient:
             name = f"input_image_{index}"
             fields.append((name, (f"{name}.png", image, "image/png")))
         response = await self._post(f"{self._account_url}/ai/run/{model}", files=fields)
-        return ImageResult(image_bytes=_extract_image(response))
+        return ImageResult(
+            image_bytes=_extract_image(response),
+            neurons=_neurons(response, {}),
+            request_id=_request_id(response),
+        )
 
     async def _post(self, url: str, **kwargs: Any) -> httpx.Response:
         try:
@@ -172,6 +180,11 @@ def _neurons(response: httpx.Response, usage: dict[str, Any]) -> float | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _request_id(response: httpx.Response) -> str | None:
+    """Cloudflare's id for the call, kept in the ledger (spec §5.4)."""
+    return response.headers.get("cf-ai-req-id") or response.headers.get("cf-ray")
 
 
 def _extract_image(response: httpx.Response) -> bytes:

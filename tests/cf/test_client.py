@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -229,3 +231,49 @@ def test_chat_falls_back_to_usage_neurons_then_none():
 
     assert chat(with_usage).neurons == pytest.approx(3.25)
     assert chat(without).neurons is None
+
+
+FIXTURES = Path(__file__).parent.parent / "fixtures" / "cf"
+
+
+def test_image_result_carries_its_neurons_and_request_id():
+    def handler(request):
+        request.read()
+        return httpx.Response(
+            200,
+            headers={"cf-ai-neurons": "207.59", "cf-ai-req-id": "req-1"},
+            json={"result": {"image": base64.b64encode(PNG).decode()}},
+        )
+
+    result = generate(handler)
+    assert (result.neurons, result.request_id) == (207.59, "req-1")
+
+
+def test_an_image_response_without_cost_headers_has_none():
+    def handler(request):
+        request.read()
+        return httpx.Response(200, json={"result": {"image": base64.b64encode(PNG).decode()}})
+
+    result = generate(handler)
+    assert (result.neurons, result.request_id) == (None, None)
+
+
+def test_chat_result_carries_the_request_id():
+    def handler(request):
+        return httpx.Response(200, headers={"cf-ai-req-id": "req-2"}, json={"choices": [{"message": {"content": "OK"}}]})
+
+    assert chat(handler).request_id == "req-2"
+
+
+def test_recorded_klein_4b_headers_give_the_cost_and_request_id():
+    record = json.loads((FIXTURES / "image_klein4b_1920x1088.json").read_text(encoding="utf-8"))
+    headers = {name: record["headers"][name] for name in ("cf-ai-neurons", "cf-ai-req-id")}
+
+    def handler(request):
+        request.read()
+        # The M0 recorder shortened the recorded base64 image, so a small one stands in for it.
+        return httpx.Response(record["status"], headers=headers, json={"result": {"image": base64.b64encode(PNG).decode()}})
+
+    result = generate(handler, width=1920, height=1088)
+    assert result.neurons == pytest.approx(207.59)
+    assert result.request_id == record["headers"]["cf-ai-req-id"]
