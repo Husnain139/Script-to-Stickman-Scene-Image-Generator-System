@@ -90,8 +90,11 @@ def place_corrections(
     return placements, errors
 
 
-def _replace(text: str, edits: Sequence[tuple[int, int, str]]) -> str:
-    """`text` with each (start, end) span replaced by its new text. The spans don't overlap."""
+Edit = tuple[int, int, str]  # (start, end, new text): a span of the source text and its replacement
+
+
+def _replace(text: str, edits: Sequence[Edit]) -> str:
+    """`text` with each span replaced by its new text. The spans don't overlap."""
     pieces: list[str] = []
     at = 0
     for start, end, new in sorted(edits):
@@ -101,17 +104,51 @@ def _replace(text: str, edits: Sequence[tuple[int, int, str]]) -> str:
     return "".join(pieces)
 
 
+def _normalise(text: str) -> str:
+    return " ".join(text.split())
+
+
+@dataclass(frozen=True)
+class CorrectedScene:
+    """A scene's source text and its corrections, placed in that text (spec §4.6, §6.2)."""
+
+    source_text: str
+    edits: tuple[Edit, ...]
+
+    @property
+    def corrected_text(self) -> str:
+        return _replace(self.source_text, self.edits)
+
+    def part_texts(self, cut_after_word: int) -> tuple[str, str] | None:
+        """The corrected text of each part when the scene is cut after word `cut_after_word`.
+
+        Each part is its own words with only its own corrections applied, so the two parts
+        joined with a space are the scene's corrected text. None when a correction straddles
+        the cut: code can't tell which words of its replacement belong to which part.
+        """
+        words = [match.span() for match in re.finditer(r"\S+", self.source_text)]
+        a_end, b_start = words[cut_after_word - 1][1], words[cut_after_word][0]
+        in_a = [edit for edit in self.edits if edit[1] <= a_end]
+        in_b = [(start - b_start, end - b_start, new) for start, end, new in self.edits if start >= b_start]
+        if len(in_a) + len(in_b) != len(self.edits):
+            return None
+        return (
+            _normalise(_replace(self.source_text[:a_end], in_a)),
+            _normalise(_replace(self.source_text[b_start:], in_b)),
+        )
+
+
 def correct_scenes(
     scenes: Sequence[Scene],
     groups: Sequence[Sequence[int]],
     texts: Sequence[str],
     corrections: Sequence[LineCorrection],
-) -> tuple[dict[int, str], list[Correction]]:
-    """Each scene's corrected text, and its corrections keyed by scene ID.
+) -> tuple[dict[int, CorrectedScene], list[Correction]]:
+    """Each scene's text with its corrections placed, and its corrections keyed by scene ID.
 
     A correction names the line where its text starts; it belongs to the group holding that
-    line. Corrections are applied per group, then the groups are joined, so a correction still
-    lands in the right place after short-scene merging has combined groups (§4.4).
+    line. A scene's text is its groups' texts joined with one space, so a correction still
+    lands in the right group after short-scene merging has combined groups (§4.4).
     """
     placements, errors = place_corrections(groups, texts, corrections)
     if errors:  # a bug: the analyse stage check rejects these
@@ -119,21 +156,23 @@ def correct_scenes(
     by_group: dict[int, list[Placement]] = {}
     for placement in placements:
         by_group.setdefault(placement.group, []).append(placement)
-    corrected: dict[int, str] = {}
+    corrected: dict[int, CorrectedScene] = {}
     stored: list[Correction] = []
     for scene in scenes:
         if not scene.groups:
             raise ValueError(f"scene {scene.number} has no group provenance")
-        parts = []
+        edits: list[Edit] = []
+        offset = 0
         for group in scene.groups:
-            fixes = by_group.get(group, [])
-            parts.append(_replace(texts[group - 1], [(p.start, p.end, p.correction.to) for p in fixes]))
-            stored += [
-                Correction(scene=f"{scene.number:03d}", from_=p.correction.from_, to=p.correction.to,
-                           reason=p.correction.reason)
-                for p in fixes
-            ]
-        corrected[scene.number] = " ".join(parts)
+            for p in by_group.get(group, []):
+                edits.append((offset + p.start, offset + p.end, p.correction.to))
+                stored.append(
+                    Correction(scene=f"{scene.number:03d}", from_=p.correction.from_, to=p.correction.to,
+                               reason=p.correction.reason)
+                )
+            offset += len(texts[group - 1]) + 1  # the space that joins it to the next group
+        source = " ".join(texts[group - 1] for group in scene.groups)
+        corrected[scene.number] = CorrectedScene(source, tuple(edits))
     return corrected, stored
 
 

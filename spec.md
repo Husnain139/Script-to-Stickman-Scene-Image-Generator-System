@@ -216,7 +216,8 @@ The split engine takes no LLM output other than the candidate list, so it is uni
 
 ### 4.6 Units
 - Units are the images to generate: unsplit scenes plus split parts, in time order.
-- A unit's `source_text` is its own words. For parts, `corrected_text` is the part of the scene's corrected text matching those words. It is aligned by the LLM in the describe stage and checked to be non-empty.
+- A unit's `source_text` is its own words. For parts, `corrected_text` is the part of the scene's corrected text matching those words.
+- **[M2]** Code sets it: a part's `corrected_text` is its own words with the corrections that lie inside them applied, so part a and part b joined with a space are the scene's corrected text. Only when a correction straddles the cut does the describe stage's `corrected_text` give the parts' texts, checked as §6.4 says.
 
 ### 4.7 Expected result for the sample script (golden test, milestone M1)
 The sample script in the brief has 29 lines.
@@ -525,6 +526,7 @@ Rules:
 - The IDs exactly match the batch.
 - The rules in §5.1 hold.
 - `corrected_text` is not empty.
+- **[M2]** For a split part whose text code can't derive (§4.6), `corrected_text` must be the start (part `1 of 2`) or the end (part `2 of 2`) of the scene's corrected text, at a word edge and shorter than the whole (whitespace normalised). Every other unit's `corrected_text` answer is ignored, because code sets it.
 - **Text-word filter:**
   - It applies **only to the fields that go into the image prompt**: `visual_idea`, `characters[].action`, `setting`, `props` and `composition`.
   - It never applies to `source_text` or `corrected_text`. Line 14 of the sample, for example, contains "medical texts".
@@ -534,6 +536,7 @@ Rules:
 ### 6.5 `replan <unit> [--hint "..."]`
 - Reruns stage 3 for one unit, with the same context plus `HINT: <text>` if one was given.
 - The unit's visual fields are replaced and its prompt is rebuilt, which sets `prompt_locked: false`. Timing is not changed.
+- **[M2]** `corrected_text` is not changed either, so a caption you edited by hand survives.
 - The write to `plan.yaml` is checked against the file hash (§12.4). The unit becomes `stale` if it had an image.
 
 ### 6.6 `recompose --aspect 9:16`

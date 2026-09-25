@@ -105,6 +105,76 @@ def test_short_scene_merging_carries_corrections(sample_chat, stage_runner, tmp_
     assert "Thomas Wehr" in scene.corrected_text
 
 
+def normalised(text):
+    return " ".join(text.split())
+
+
+def split_scenes(plan):
+    return [scene for scene in plan.scenes if scene.split.status == "split"]
+
+
+def assert_parts_share_the_scene_text(plan):
+    scenes = split_scenes(plan)
+    assert len(scenes) == 8
+    for scene in scenes:
+        a, b = scene.units
+        assert normalised(f"{a.corrected_text} {b.corrected_text}") == normalised(scene.corrected_text), scene.id
+        assert normalised(scene.corrected_text) not in (normalised(a.corrected_text), normalised(b.corrected_text))
+
+
+def test_split_parts_get_their_own_share_of_the_scene_text(outcome):
+    assert_parts_share_the_scene_text(outcome.plan)
+    a, b = outcome.plan.scenes[5].units
+    assert (a.corrected_text, b.corrected_text) == (
+        "Anthropologists studying the Ju/'hoansi in the Kalahari",
+        "recorded what people talk about by daylight versus by firelight.",
+    )
+
+
+def units_line(messages):
+    row = next(row for row in messages[1]["content"].splitlines() if row.startswith("UNITS: "))
+    return json.loads(row[len("UNITS: "):])
+
+
+def test_split_part_text_is_derived_even_when_the_llm_returns_the_whole_scene(stage_runner, tmp_path, fake_chat, sample_reply):
+    def whole_scene(model, messages):  # what the live model did for 14 of 16 parts
+        answer = json.loads(sample_reply(model, messages))
+        if "units" in answer:
+            scene_text = {unit["id"]: unit["scene_corrected_text"] for unit in units_line(messages)}
+            for unit in answer["units"]:
+                unit["corrected_text"] = scene_text[unit["id"]]
+        return json.dumps(answer)
+
+    chat = fake_chat(whole_scene)
+    assert_parts_share_the_scene_text(plan_sample(stage_runner(chat), tmp_path).plan)
+    assert all(len(call["messages"]) == 2 for call in chat.calls)  # nothing was asked again
+
+
+def test_a_correction_across_the_cut_takes_the_part_texts_from_the_llm(stage_runner, tmp_path, fake_chat, sample_reply):
+    across = {"line": 6, "from": "Kalahari recorded", "to": "Kalahari, recorded", "reason": "spans the cut"}
+    parts = {"006a": "Anthropologists studying the Ju/'hoansi in the Kalahari,",
+             "006b": "recorded what people talk about by daylight versus by firelight."}
+
+    def reply(model, messages):
+        answer = json.loads(sample_reply(model, messages))
+        if "corrections" in answer:
+            answer["corrections"].append(across)
+        scene_text = {unit["id"]: unit["scene_corrected_text"] for unit in units_line(messages)} if "units" in answer else {}
+        for unit in answer.get("units", []):
+            if unit["id"] in parts:  # the whole scene first, the right share when asked again
+                unit["corrected_text"] = parts[unit["id"]] if len(messages) > 2 else scene_text[unit["id"]]
+        return json.dumps(answer)
+
+    chat = fake_chat(reply)
+    plan = plan_sample(stage_runner(chat), tmp_path).plan
+    a, b = plan.scenes[5].units
+    assert (a.corrected_text, b.corrected_text) == (parts["006a"], parts["006b"])
+    [retry] = [call for call in chat.calls if len(call["messages"]) > 2]
+    feedback = retry["messages"][3]["content"]
+    assert "- units[5].corrected_text: return only this part's words, not the whole scene" in feedback
+    assert "- units[6].corrected_text: return only this part's words, not the whole scene" in feedback
+
+
 REPLANNED = {
     "id": "006a", "corrected_text": "Anthropologists studying the Ju/'hoansi in the Kalahari",
     "visual_idea": "An anthropologist sketches in a notebook", "visual_type": "literal", "shot": "close-up",
@@ -126,3 +196,15 @@ def test_replan_redesigns_one_unit_and_keeps_its_timing(outcome, tmp_path, fake_
     user = chat.calls[0]["messages"][1]["content"]
     assert user.splitlines()[-1] == "HINT: show the notebook"
     assert '"id": "005"' in user and '"id": "006b"' in user  # PREVIOUS and NEXT context
+
+
+@pytest.mark.parametrize("unit_id", ["006a", "007"])
+def test_replan_keeps_the_units_corrected_text(outcome, tmp_path, fake_chat, stage_runner, unit_id):
+    plan = outcome.plan.model_copy(deep=True)
+    edited = next(unit for unit in plan.units() if unit.id == unit_id)
+    edited.corrected_text = "My own caption"
+    chat = fake_chat([json.dumps({"units": [{**REPLANNED, "id": unit_id}]})])
+    ctx = load_planning_context(tmp_path, Settings())
+    unit = asyncio.run(replan_unit(stage_runner(chat), ctx, plan, unit_id, hint=None))
+    assert unit.corrected_text == "My own caption"
+    assert unit.visual_idea == "An anthropologist sketches in a notebook"

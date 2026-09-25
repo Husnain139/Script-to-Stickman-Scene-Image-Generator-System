@@ -27,6 +27,10 @@ class UnitContext:
     source_text: str
     scene_corrected_text: str
     part: str | None = None
+    # A split part whose corrected text code can't derive, because a correction straddles the
+    # cut (spec §4.6): its text comes from this stage, so the check holds it to its share of
+    # the scene text. Every other unit's corrected text is set by code and the answer's is ignored.
+    text_from_llm: bool = False
 
 
 @dataclass(frozen=True)
@@ -68,6 +72,21 @@ def _normalise(text: str) -> str:
     return " ".join(text.split())
 
 
+def _part_text_errors(text: str, context: UnitContext, where: str) -> list[str]:
+    """Part 1 of 2 must be the start of the scene's corrected text and part 2 of 2 its end,
+    each at a word edge and shorter than the whole (whitespace normalised)."""
+    part, scene = _normalise(text), _normalise(context.scene_corrected_text)
+    if part == scene:
+        return [f"{where}.corrected_text: return only this part's words, not the whole scene"]
+    if context.part == "1 of 2":
+        if scene.startswith(part + " "):
+            return []
+        return [f"{where}.corrected_text: return only this part's words: the start of the scene's corrected text, up to the cut"]
+    if scene.endswith(" " + part):
+        return []
+    return [f"{where}.corrected_text: return only this part's words: the end of the scene's corrected text, from the cut"]
+
+
 def check_describe(result: DescribeResult, batch: Sequence[UnitContext], cast_ids: Collection[str]) -> list[str]:
     expected = [context.id for context in batch]
     got = [unit.id for unit in result.units]
@@ -82,11 +101,8 @@ def check_describe(result: DescribeResult, batch: Sequence[UnitContext], cast_id
                 errors.append(f'{where}.characters[{c_index}].ref: {character.ref!r} is not "mascot" or a CAST id')
         errors += text_word_errors(unit, where)
         context = contexts.get(unit.id)
-        if context is not None and context.part is not None:
-            if _normalise(unit.corrected_text) not in _normalise(context.scene_corrected_text):
-                errors.append(
-                    f"{where}.corrected_text: must be the part of the scene's corrected text for this unit's words"
-                )
+        if context is not None and context.text_from_llm:
+            errors += _part_text_errors(unit.corrected_text, context, where)
     return errors
 
 

@@ -20,6 +20,10 @@ FIXES = [
 ]
 
 
+def texts_of(corrected):
+    return {number: scene.corrected_text for number, scene in corrected.items()}
+
+
 def test_whole_words_are_found_on_word_edges_only():
     text = "In 1992, researchers named it first sleep, 2 sleep."
     assert find_whole_words(text, "2") == [(43, 44)]
@@ -35,7 +39,7 @@ def test_a_short_from_is_replaced_where_it_is_a_whole_word():
     analysed = AnalyseResult(groups=groups, corrections=[fix], cast=[])
     assert check_analyse(analysed, lines, max_lines=3, library_ids=set()) == []
     corrected, _ = correct_scenes(build_scenes(lines, groups, max_lines=3), groups, group_texts(lines, groups), [fix])
-    assert corrected == {1: "In 1992, researchers named it first sleep, second sleep."}
+    assert texts_of(corrected) == {1: "In 1992, researchers named it first sleep, second sleep."}
 
 
 def test_correct_scenes_refuses_corrections_that_were_not_checked():
@@ -48,7 +52,7 @@ def test_correct_scenes_refuses_corrections_that_were_not_checked():
 def test_corrections_apply_at_scene_level_across_a_line_break():
     scenes = build_scenes(LINES, GROUPS, max_lines=3)
     corrected, stored = correct_scenes(scenes, GROUPS, group_texts(LINES, GROUPS), FIXES)
-    assert corrected == {
+    assert texts_of(corrected) == {
         1: "It's 9 at night.",
         2: "Historian Roger Ekirch went digging.",
         3: "First sleep, second sleep.",
@@ -63,8 +67,48 @@ def test_corrections_apply_at_scene_level_across_a_line_break():
 def test_corrections_follow_scenes_merged_for_being_short():
     scenes = merge_short_scenes(build_scenes(LINES, GROUPS, max_lines=3), min_scene_seconds=1.5, max_lines=3)
     corrected, stored = correct_scenes(scenes, GROUPS, group_texts(LINES, GROUPS), FIXES)
-    assert corrected == {1: "It's 9 at night.", 2: "Historian Roger Ekirch went digging. First sleep, second sleep."}
+    assert texts_of(corrected) == {1: "It's 9 at night.", 2: "Historian Roger Ekirch went digging. First sleep, second sleep."}
     assert [c.scene for c in stored] == ["001", "002", "002"]
+
+
+KALAHARI = [TimedLine(1, 0.0, 8.0, "Anthropologists studying the Zhuansi in the Kalahari recorded what people talk about.")]
+
+
+def corrected_scene(fixes, lines=KALAHARI, groups=((1,),)):
+    groups = [list(group) for group in groups]
+    corrected, _ = correct_scenes(build_scenes(lines, groups, max_lines=3), groups, group_texts(lines, groups), fixes)
+    return corrected[1]
+
+
+def test_a_correction_inside_part_a_goes_to_part_a_only():
+    scene = corrected_scene([LineCorrection(line=1, from_="Zhuansi", to="Ju/'hoansi")])
+    assert scene.part_texts(7) == ("Anthropologists studying the Ju/'hoansi in the Kalahari", "recorded what people talk about.")
+
+
+def test_a_correction_inside_part_b_goes_to_part_b_only():
+    scene = corrected_scene([LineCorrection(line=1, from_="talk about", to="discuss")])
+    assert scene.part_texts(7) == ("Anthropologists studying the Zhuansi in the Kalahari", "recorded what people discuss.")
+
+
+def test_a_correction_across_the_cut_leaves_the_part_texts_to_the_llm():
+    scene = corrected_scene([LineCorrection(line=1, from_="Kalahari recorded", to="Kalahari, recorded")])
+    assert scene.part_texts(7) is None
+    assert scene.part_texts(6) is not None and scene.part_texts(8) is not None
+
+
+def test_part_texts_add_up_to_the_scene_text_at_every_cut_of_a_merged_scene():
+    scenes = merge_short_scenes(build_scenes(LINES, GROUPS, max_lines=3), min_scene_seconds=1.5, max_lines=3)
+    corrected, _ = correct_scenes(scenes, GROUPS, group_texts(LINES, GROUPS), FIXES)
+    scene = corrected[2]  # "Historian Roger Ekirch went digging. First sleep, second sleep." from groups 2 and 3
+    assert scene.part_texts(5) == ("Historian Roger Ekirch went", "digging. First sleep, second sleep.")
+    across = set()
+    for k in range(1, len(scenes[1].tokens)):
+        parts = scene.part_texts(k)
+        if parts is None:
+            across.add(k)
+        else:
+            assert " ".join(parts) == scene.corrected_text
+    assert across == {2, 3, 9}  # inside "Roger E. Kirch" and "2 sleep"
 
 
 def test_merge_check_lists_disagreements_only():
@@ -82,5 +126,5 @@ def test_a_correction_on_the_second_line_of_a_group_lands_in_that_group():
     scenes = build_scenes(LINES, GROUPS, max_lines=3)
     fix = [LineCorrection(line=3, from_="digging", to="searching", reason="test")]
     corrected, stored = correct_scenes(scenes, GROUPS, group_texts(LINES, GROUPS), fix)
-    assert corrected[2] == "Historian Roger E. Kirch went searching."
+    assert corrected[2].corrected_text == "Historian Roger E. Kirch went searching."
     assert [c.scene for c in stored] == ["002"]

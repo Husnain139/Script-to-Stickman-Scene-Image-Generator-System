@@ -166,10 +166,19 @@ def _sample_cut(user):
     return {"scenes": scenes}
 
 
+def _sample_part_text(unit):
+    """What a good model returns: the scene's corrected text, or for a part its own words corrected."""
+    if unit["part"] is None:
+        return unit["scene_corrected_text"]
+    text = unit["source_text"]
+    for fix in SAMPLE_CORRECTIONS:
+        text = text.replace(fix["from"], fix["to"])
+    return text
+
+
 def _sample_design(unit):
-    text = unit["source_text"] if unit["source_text"] in unit["scene_corrected_text"] else unit["scene_corrected_text"]
     return {
-        "id": unit["id"], "corrected_text": text, "visual_idea": f"Idea for {unit['id']}",
+        "id": unit["id"], "corrected_text": _sample_part_text(unit), "visual_idea": f"Idea for {unit['id']}",
         "visual_type": "literal", "shot": "wide", "time_of_day": "night",
         "characters": [{"ref": "caveman_group", "action": "sitting by the fire", "emotion": "calm"}],
         "mood": None, "setting": ["flat ground line"], "props": ["small campfire"],

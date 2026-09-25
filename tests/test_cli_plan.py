@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 
 from stickman import cli
 from stickman.cf.errors import CFError, ErrorCategory
-from stickman.plan.store import load_plan
+from stickman.plan.store import load_plan, update_unit, write_plan
 
 runner = CliRunner()
 SAMPLE = Path(__file__).parent / "fixtures" / "scripts" / "first-sleep.txt"
@@ -135,6 +135,19 @@ def test_replan_updates_one_unit_and_keeps_hand_edits(workspace, monkeypatch, sa
     assert unit.visual_idea == "An anthropologist sketches in a notebook"
     assert "Scene: An anthropologist sketches in a notebook." in unit.image_prompt
     assert chat.calls[0]["messages"][1]["content"].endswith("HINT: show the notebook")
+
+
+@pytest.mark.parametrize("unit_id", ["006a", "007"])
+def test_replan_keeps_a_hand_edited_corrected_text(workspace, monkeypatch, sample_chat, fake_chat, unit_id):
+    path = planned(workspace, monkeypatch, sample_chat)
+    loaded = load_plan(path)
+    update_unit(loaded.doc, unit_id, {"corrected_text": "My own caption"})
+    write_plan(path, loaded.doc, expected_hash=loaded.hash)
+    use_chat(monkeypatch, fake_chat([json.dumps({"units": [{**REPLANNED, "id": unit_id}]})]))
+    result = replan(workspace, unit_id)
+    assert result.exit_code == 0, result.output
+    unit = next(u for u in load_plan(path).plan.units() if u.id == unit_id)
+    assert (unit.corrected_text, unit.visual_idea) == ("My own caption", "An anthropologist sketches in a notebook")
 
 
 def test_replan_refuses_when_the_plan_changed_meanwhile(workspace, monkeypatch, sample_chat, fake_chat):

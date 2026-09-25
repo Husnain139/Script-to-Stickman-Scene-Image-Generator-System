@@ -88,13 +88,41 @@ def test_characters_must_be_in_the_cast():
     assert any("units[0].characters[0].ref" in e for e in check_describe(result(bad), [ctx("001")], set(CAST)))
 
 
-def test_split_parts_return_their_share_of_the_corrected_text():
-    part = ctx("006a", part="1 of 2", text="Anthropologists studying the Zhuansi",
-               scene_text="Anthropologists studying the Ju/'hoansi in the Kalahari")
-    ok = design_json("006a", corrected="Anthropologists  studying the Ju/'hoansi")
-    wrong = design_json("006a", corrected="Scientists studying people")
-    assert check_describe(result(ok), [part], set(CAST)) == []
-    assert any("units[0].corrected_text" in e for e in check_describe(result(wrong), [part], set(CAST)))
+def test_a_part_whose_text_code_derives_is_not_checked():
+    """Code sets such a part's text, so the answer's value is ignored (cached answers stay valid)."""
+    scene = "Anthropologists studying the Ju/'hoansi in the Kalahari recorded what people talk about."
+    part = ctx("006a", part="1 of 2", text="Anthropologists studying the Zhuansi in the Kalahari", scene_text=scene)
+    assert check_describe(result(design_json("006a", corrected=scene)), [part], set(CAST)) == []
+
+
+ACROSS = "Historian Roger Ekirch went digging."  # "Roger E. Kirch" -> "Roger Ekirch" straddles the cut
+
+
+def across_the_cut():
+    return [
+        UnitContext("002a", 0.0, 2.0, "Historian Roger", ACROSS, "1 of 2", text_from_llm=True),
+        UnitContext("002b", 2.0, 4.0, "E. Kirch went digging.", ACROSS, "2 of 2", text_from_llm=True),
+    ]
+
+
+def test_a_part_across_a_correction_must_not_return_the_whole_scene():
+    errors = check_describe(result(design_json("002a", ACROSS), design_json("002b", ACROSS)), across_the_cut(), set(CAST))
+    assert errors == [
+        "units[0].corrected_text: return only this part's words, not the whole scene",
+        "units[1].corrected_text: return only this part's words, not the whole scene",
+    ]
+
+
+def test_a_part_across_a_correction_is_the_start_or_the_end_of_the_scene_text():
+    ok = result(design_json("002a", "Historian  Roger Ekirch"), design_json("002b", "went digging."))
+    assert check_describe(ok, across_the_cut(), set(CAST)) == []
+    swapped = result(design_json("002a", "went digging."), design_json("002b", "Historian Roger Ekirch"))
+    assert check_describe(swapped, across_the_cut(), set(CAST)) == [
+        "units[0].corrected_text: return only this part's words: the start of the scene's corrected text, up to the cut",
+        "units[1].corrected_text: return only this part's words: the end of the scene's corrected text, from the cut",
+    ]
+    mid_word = result(design_json("002a", "Historian Roger Ek"), design_json("002b", "irch went digging."))
+    assert len(check_describe(mid_word, across_the_cut(), set(CAST))) == 2
 
 
 def test_the_user_message_lists_the_context_sections():

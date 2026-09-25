@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,8 +12,8 @@ from stickman.ingest.parse import parse_script
 from stickman.ingest.timing import build_timeline, length_warning
 from stickman.library import LibraryCharacter, find_references, load_library
 from stickman.plan.analyse import analyse, group_texts
-from stickman.plan.cast import cast_infos
-from stickman.plan.corrections import correct_scenes, merge_check
+from stickman.plan.cast import CastInfo, cast_infos
+from stickman.plan.corrections import CorrectedScene, correct_scenes, merge_check
 from stickman.plan.cut import cut_candidates
 from stickman.plan.describe import DescribedUnit, PreviousUnit, UnitContext, describe_batch, describe_units
 from stickman.plan.llm import StageRunner
@@ -35,7 +35,8 @@ from stickman.split.engine import SplitDecision, decide_split
 from stickman.split.scenes import Scene, build_scenes, merge_short_scenes
 from stickman.split.units import Unit, build_units
 
-REPLAN_KEYS: tuple[str, ...] = ("corrected_text", *VISUAL_FIELDS, "image_prompt", "prompt_locked")
+# replan never changes corrected_text: code set it at planning time, or you edited it (spec §6.5)
+REPLAN_KEYS: tuple[str, ...] = (*VISUAL_FIELDS, "image_prompt", "prompt_locked")
 
 
 @dataclass(frozen=True)
@@ -87,7 +88,36 @@ def _references(ctx: PlanningContext, cast: Sequence[MascotEntry | CastMember]) 
     )
 
 
-def _plan_unit(unit: Unit, design: DescribedUnit, scene_corrected: str) -> PlanUnit:
+def _with_prompt(
+    unit: PlanUnit, ctx: PlanningContext, table: Mapping[str, CastInfo], references: ReferenceAvailability
+) -> PlanUnit:
+    """The unit with its image prompt built from its fields (spec §7.4)."""
+    prompt = build_prompt(unit, style=ctx.style, cast=table, references=references.for_unit(unit.characters))
+    return unit.model_copy(update={"image_prompt": prompt})
+
+
+def _unit_texts(
+    units: Sequence[Unit], decisions: Mapping[int, SplitDecision], corrected: Mapping[int, CorrectedScene]
+) -> dict[str, str | None]:
+    """Each unit's corrected text, set by code (spec §4.6).
+
+    An unsplit unit gets its scene's corrected text, and a split part its own words with its
+    own corrections. None marks a part whose text the describe stage gives instead, because a
+    correction straddles the cut.
+    """
+    texts: dict[str, str | None] = {}
+    for unit in units:
+        scene = corrected[unit.scene_number]
+        cut = decisions[unit.scene_number].cut_after_word
+        if unit.part is None or cut is None:
+            texts[unit.id] = scene.corrected_text
+            continue
+        parts = scene.part_texts(cut)
+        texts[unit.id] = None if parts is None else parts[0 if unit.part == "1 of 2" else 1]
+    return texts
+
+
+def _plan_unit(unit: Unit, design: DescribedUnit, text: str | None) -> PlanUnit:
     return PlanUnit.model_validate(
         {
             **design.model_dump(include=set(VISUAL_FIELDS)),
@@ -96,7 +126,7 @@ def _plan_unit(unit: Unit, design: DescribedUnit, scene_corrected: str) -> PlanU
             "start": _t(unit.start),
             "end": _t(unit.end),
             "source_text": unit.source_text,
-            "corrected_text": scene_corrected if unit.part is None else design.corrected_text,
+            "corrected_text": design.corrected_text if text is None else text,
         }
     )
 
@@ -140,19 +170,25 @@ async def plan_script(
     candidates = await cut_candidates(runner, scenes, s.split)
     decisions = {scene.number: decide_split(scene, candidates.get(scene.number, []), s.split) for scene in scenes}
     units = build_units(scenes, decisions)
+    texts = _unit_texts(units, decisions, corrected)
 
     cast: list[MascotEntry | CastMember] = [MascotEntry(id=MASCOT)]
     cast += [CastMember.model_validate(member.model_dump()) for member in analysed.cast]
     table = cast_infos(cast, ctx.mascot)
-    contexts = [UnitContext(u.id, u.start, u.end, u.source_text, corrected[u.scene_number], u.part) for u in units]
+    contexts = [
+        UnitContext(
+            u.id, u.start, u.end, u.source_text, corrected[u.scene_number].corrected_text, u.part,
+            text_from_llm=texts[u.id] is None,
+        )
+        for u in units
+    ]
     designs = await describe_units(runner, contexts, cast=table, rules=ctx.rules.rules, batch_size=s.llm.batch_size)
 
     references = _references(ctx, cast)
     by_scene: dict[int, list[PlanUnit]] = {}
     for unit in units:
-        plan_unit = _plan_unit(unit, designs[unit.id], corrected[unit.scene_number])
-        prompt = build_prompt(plan_unit, style=ctx.style, cast=table, references=references.for_unit(plan_unit.characters))
-        by_scene.setdefault(unit.scene_number, []).append(plan_unit.model_copy(update={"image_prompt": prompt}))
+        plan_unit = _plan_unit(unit, designs[unit.id], texts[unit.id])
+        by_scene.setdefault(unit.scene_number, []).append(_with_prompt(plan_unit, ctx, table, references))
 
     plan = Plan(
         project=project,
@@ -164,7 +200,10 @@ async def plan_script(
         cast=cast,
         corrections=corrections,
         merge_check=merge_check(timeline.lines, hints, analysed.groups),
-        scenes=[_plan_scene(sc, decisions[sc.number], corrected[sc.number], by_scene[sc.number]) for sc in scenes],
+        scenes=[
+            _plan_scene(sc, decisions[sc.number], corrected[sc.number].corrected_text, by_scene[sc.number])
+            for sc in scenes
+        ],
     )
     errors = check_plan(plan, library_ids=ctx.library_ids)
     if errors:  # a bug: every stage was already checked
@@ -175,7 +214,8 @@ async def plan_script(
 async def replan_unit(
     runner: StageRunner, ctx: PlanningContext, plan: Plan, unit_id: str, *, hint: str | None
 ) -> PlanUnit:
-    """Rerun stage 3 for one unit (spec §6.5). Timing is unchanged; the prompt is rebuilt and unlocked."""
+    """Rerun stage 3 for one unit (spec §6.5). Timing and corrected_text are unchanged; the prompt
+    is rebuilt and unlocked."""
     units = plan.units()
     index = [unit.id for unit in units].index(unit_id)
     unit = units[index]
@@ -189,13 +229,6 @@ async def replan_unit(
         rules=ctx.rules.rules, hint=hint, use_cache=False,
     )
     fresh = PlanUnit.model_validate(
-        {
-            **unit.model_dump(),
-            **design.model_dump(include=set(VISUAL_FIELDS)),
-            "corrected_text": scene.corrected_text if unit.part is None else design.corrected_text,
-            "prompt_locked": False,
-        }
+        {**unit.model_dump(), **design.model_dump(include=set(VISUAL_FIELDS)), "prompt_locked": False}
     )
-    references = _references(ctx, plan.cast).for_unit(fresh.characters)
-    prompt = build_prompt(fresh, style=ctx.style, cast=table, references=references)
-    return fresh.model_copy(update={"image_prompt": prompt})
+    return _with_prompt(fresh, ctx, table, _references(ctx, plan.cast))
