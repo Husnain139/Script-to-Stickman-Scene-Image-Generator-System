@@ -213,7 +213,7 @@ class StageRunner:
                     ok=False,
                     error=str(exc.category),
                     status=exc.status,
-                    message=shorten(exc.message),
+                    message=shorten(self._log.mask(exc.message)),  # masked before the cut, which could split a secret
                     billing=billing_of(exc),
                     latency_s=round(time.perf_counter() - started, 2),
                 )

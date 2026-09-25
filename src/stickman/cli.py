@@ -44,7 +44,7 @@ from stickman.render.recovery import recover
 from stickman.render.renderer import Renderer, RunResult, StopReason
 from stickman.render.state import StateError, StateStore
 from stickman.render.summary import summary_lines
-from stickman.runlog import RunLog
+from stickman.runlog import RunLog, mask
 from stickman.settings import (
     DEFAULT_CONFIG_FILES,
     AppConfig,
@@ -99,6 +99,14 @@ def _today() -> date:
 def _fail(message: str, code: int) -> NoReturn:
     console.print(f"[red]{escape(message)}[/red]")
     raise typer.Exit(code)
+
+
+def _secrets(cfg: AppConfig) -> tuple[str, ...]:
+    """What run logs, state.json and console messages built from Cloudflare errors mask: the token and
+    the account id (Cloudflare's routing errors echo the request path, which holds the account id)."""
+    if cfg.secrets is None:
+        return ()
+    return (cfg.secrets.cf_api_token.get_secret_value(), cfg.secrets.cf_account_id)
 
 
 def build_client(cfg: AppConfig) -> CloudflareClient:
@@ -169,7 +177,7 @@ async def _verify_token(cfg: AppConfig) -> None:
         if exc.category is ErrorCategory.AUTH:
             console.print(f"[red]{escape(TOKEN_HELP)}[/red]")
             raise typer.Exit(EXIT_CONFIG_ERROR)
-        console.print(f"[red]Token check failed: {escape(str(exc))}[/red]")
+        console.print(f"[red]Token check failed: {escape(mask(str(exc), _secrets(cfg)))}[/red]")
         raise typer.Exit(EXIT_USER_ERROR)
 
 
@@ -177,9 +185,8 @@ def _run_llm(
     cfg: AppConfig, directory: Path, work: Callable[[StageRunner], Awaitable[T]], *, cached: bool
 ) -> T:
     """Run LLM work for a project and turn its failures into CLI messages and exit codes."""
-    token = cfg.secrets.cf_api_token.get_secret_value() if cfg.secrets else ""
-    log = RunLog.for_project(directory, secrets=(token,))
-    again = " Finished stages are cached, so running the same command again continues from there." if cached else ""
+    log = RunLog.for_project(directory, secrets=_secrets(cfg))
+    again =" Finished stages are cached, so running the same command again continues from there." if cached else ""
     try:
         pricing = load_pricing(cfg.workspace)
     except ConfigError as exc:
@@ -435,9 +442,8 @@ def _generate_locked(
         jobs = builder.jobs(todo)
     except JobError as exc:
         _fail(str(exc), EXIT_USER_ERROR)
-    token = cfg.secrets.cf_api_token.get_secret_value() if cfg.secrets else ""
-    log = RunLog.for_project(directory, secrets=(token,))
-    ledger = Ledger(cfg.workspace / LEDGER_FILE)
+    log = RunLog.for_project(directory, secrets=_secrets(cfg))
+    ledger =Ledger(cfg.workspace / LEDGER_FILE)
     now = datetime.now().astimezone()
     budget = Budget.from_ledger(
         ledger, cfg.settings.budget, now=now, force=force,

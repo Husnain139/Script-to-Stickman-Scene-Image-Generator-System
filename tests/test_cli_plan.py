@@ -317,3 +317,14 @@ def test_cloudflare_errors_on_the_console_mask_the_token(workspace, monkeypatch,
     assert result.exit_code == 1
     assert "rejected request from ***" in result.output
     assert "tok-secret" not in result.output
+
+
+def test_cloudflare_errors_that_echo_the_account_id_are_masked(workspace, monkeypatch, fake_chat):
+    use_chat(monkeypatch, fake_chat([CFError(ErrorCategory.BAD_REQUEST, "Could not route to /accounts/acc123/ai/v1")]))
+    result = new(workspace)
+    assert result.exit_code == 1
+    assert "Could not route to /accounts/***/ai/v1" in result.output
+    assert "acc123" not in result.output
+    logs = "".join(p.read_text(encoding="utf-8") for p in (folder(workspace) / "logs").glob("run-*.jsonl"))
+    assert "/accounts/***/ai/v1" in logs
+    assert "acc123" not in logs

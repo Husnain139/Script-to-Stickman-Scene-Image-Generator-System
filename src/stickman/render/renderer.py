@@ -180,7 +180,7 @@ class Renderer:
                 ok=False,
                 error=str(exc.category),
                 status=exc.status,
-                message=shorten(exc.message),
+                message=shorten(self._log.mask(exc.message)),  # masked before the cut, which could split a secret
                 billing=billing_of(exc),
                 usd=job.estimate_usd,
             )
@@ -216,15 +216,16 @@ class Renderer:
 
     def _failed(self, job: RenderJob, exc: CFError) -> None:
         if exc.category is ErrorCategory.DAILY_LIMIT:
-            self.control.stop(StopReason.DAILY_LIMIT, exc.message)
+            self.control.stop(StopReason.DAILY_LIMIT, self._log.mask(exc.message))
             self._store.set_status(job.unit_id, "planned")
         elif exc.category is ErrorCategory.AUTH:
-            self.control.stop(StopReason.AUTH, exc.message)
+            self.control.stop(StopReason.AUTH, self._log.mask(exc.message))
             self._store.set_status(job.unit_id, "planned")
         else:
             # bad_request and refused (M4 turns a refusal into a softened retry, spec §7.5), or a
-            # rate limit or temporary error after its retries.
-            message = self._log.mask(shorten(exc.message, ERROR_CHARS))
+            # rate limit or temporary error after its retries. Masked before the cut, which could
+            # split a secret.
+            message = shorten(self._log.mask(exc.message), ERROR_CHARS)
             self._store.set_status(job.unit_id, "failed", error=f"{exc.category}: {message}")
 
     def _save(self, job: RenderJob, metered: Metered[ImageResult]) -> None:

@@ -277,3 +277,65 @@ def test_recorded_klein_4b_headers_give_the_cost_and_request_id():
     result = generate(handler, width=1920, height=1088)
     assert result.neurons == pytest.approx(207.59)
     assert result.request_id == record["headers"]["cf-ai-req-id"]
+
+
+# A token and an account id as long as real ones, so a cut can land inside them.
+LONG_TOKEN = "cfut_Q7w9E2r4T6y8U1i3O5p7A9s2D4f6G8h0"
+LONG_ACCOUNT = "0123456789abcdef0123456789abcdef"
+
+
+def failing_call(handler, call):
+    async def go():
+        async with CloudflareClient(
+            LONG_ACCOUNT, LONG_TOKEN, plan="paid", timeout_s=5, transport=httpx.MockTransport(handler)
+        ) as client:
+            if call == "chat":
+                return await client.chat("@cf/openai/gpt-oss-120b", [{"role": "user", "content": "hi"}])
+            return await client.generate_image(KLEIN_4B, prompt="a stickman", width=1920, height=1080, seed=42)
+
+    with pytest.raises(CFError) as info:
+        asyncio.run(go())
+    return info.value.message
+
+
+def assert_no_secret(message):
+    for secret in (LONG_TOKEN, LONG_ACCOUNT):
+        assert secret[:6] not in message, message
+    assert "***" in message
+
+
+def test_an_error_body_is_masked_before_it_is_cut():
+    body = "x" * 490 + LONG_TOKEN + "y" * 73  # 600 characters; the token crosses the 500-character cut
+    message = failing_call(lambda request: httpx.Response(400, text=body), "image")
+    assert_no_secret(message)
+
+
+def test_a_chat_body_that_is_not_json_is_masked_before_it_is_cut():
+    body = "x" * 290 + LONG_TOKEN  # crosses the 300-character cut
+    assert_no_secret(failing_call(lambda request: httpx.Response(200, text=body), "chat"))
+
+
+@pytest.mark.parametrize(
+    ("call", "data"),
+    [
+        ("chat", {"detail": "x" * 278 + LONG_TOKEN}),  # str(data) puts the token at 290, across character 300
+        ("image", {"result": {}, "detail": "x" * 264 + LONG_ACCOUNT}),
+    ],
+    ids=["chat-shape", "no-image"],
+)
+def test_an_unexpected_response_is_masked_before_it_is_cut(call, data):
+    def handler(request):
+        request.read()
+        return httpx.Response(200, json=data)
+
+    assert_no_secret(failing_call(handler, call))
+
+
+@pytest.mark.parametrize("error", [httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout])
+def test_a_network_error_that_names_the_secrets_is_masked(error):
+    def handler(request):
+        raise error(f"no route to /accounts/{LONG_ACCOUNT}/ai/run with {LONG_TOKEN}", request=request)
+
+    message = failing_call(handler, "image")
+    assert LONG_TOKEN not in message and LONG_ACCOUNT not in message
+    assert_no_secret(message)

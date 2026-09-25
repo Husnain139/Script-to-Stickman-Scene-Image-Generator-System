@@ -173,3 +173,16 @@ def test_generate_without_a_planned_project_exits_1(tmp_path, monkeypatch):
     result = generate(tmp_path)
     assert result.exit_code == 1
     assert result.output.splitlines()[0] == "Project: (none found)"
+
+
+def test_errors_that_echo_the_account_id_are_masked(workspace, monkeypatch, fake_images, jpeg):
+    rejected = CFError(ErrorCategory.BAD_REQUEST, "Could not route to /client/v4/accounts/acc123/ai/run", status=400)
+    use_images(monkeypatch, fake_images(only_001(rejected, jpeg)))
+    result = generate(workspace)
+    assert result.exit_code == 0, result.output
+    assert "Failed: 001 (bad_request: Could not route to /client/v4/accounts/***/ai/run)" in result.output
+    assert "acc123" not in result.output
+    assert "acc123" not in (project(workspace) / "state.json").read_text(encoding="utf-8")
+    logs = "".join(p.read_text(encoding="utf-8") for p in (project(workspace) / "logs").glob("run-*.jsonl"))
+    assert "accounts/***/ai/run" in logs
+    assert "acc123" not in logs

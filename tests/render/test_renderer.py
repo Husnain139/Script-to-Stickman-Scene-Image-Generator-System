@@ -217,3 +217,22 @@ def test_reference_images_are_sent_in_slot_order_and_recorded(tmp_path, plan_dat
     assert [ref.split("#")[0] for ref in version.refs] == ["library/style/anchor_v1_ref.png", "library/mascot/ref_v1.png"]
     assert all(ref.split("#")[1].startswith("sha256:") for ref in version.refs)
     assert run.log()[0]["refs"] == version.refs
+
+
+def test_a_token_across_a_cut_is_masked_before_the_message_is_shortened(tmp_path, plan_data, fake_images, jpeg):
+    # The token crosses character 200 (ERROR_CHARS, state.json) and again character 300 (the run log).
+    message = "x" * 195 + "tok-secret" + "y" * 90 + "tok-secret" + "z" * 20
+    rejected = CFError(ErrorCategory.BAD_REQUEST, message, status=400)
+    run = Run(tmp_path, plan_data, fake_images(lambda call: rejected if call["prompt"] == "prompt for 001" else jpeg))
+    run.go()
+    assert run.store.unit("001").error.startswith("bad_request: " + "x" * 195 + "***")
+    assert "tok-s" not in (run.project / "state.json").read_text(encoding="utf-8")
+    assert "tok-s" not in run.log_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("category", [ErrorCategory.DAILY_LIMIT, ErrorCategory.AUTH])
+def test_the_stop_detail_is_masked(tmp_path, plan_data, fake_images, category):
+    run = Run(tmp_path, plan_data, fake_images([CFError(category, "refused for tok-secret", status=429)]), concurrency=1)
+    result = run.go()
+    assert result.stop is not None
+    assert result.detail == "refused for ***"

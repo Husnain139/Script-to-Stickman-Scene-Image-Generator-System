@@ -218,3 +218,18 @@ def test_planning_calls_go_in_the_ledger(fake_chat, tmp_path):
     assert (entry.kind, entry.model, entry.billing, entry.neurons, entry.project) == (
         "llm", LLM.planner_model, "billed", 1.5, "2026-09-25_demo")
     assert entry.est_usd == pytest.approx(1.5 * 0.011 / 1000)
+
+
+def test_a_token_across_the_log_cut_is_masked_before_the_message_is_shortened(fake_chat, tmp_path):
+    async def no_sleep(seconds):
+        return None
+
+    log_path = tmp_path / "run.jsonl"
+    message = "x" * 295 + "tok-secret"  # crosses the run log's 300-character cut
+    runner = StageRunner(fake_chat([CFError(ErrorCategory.BAD_REQUEST, message)]), LLMSettings(), RetrySettings(),
+                         cache_dir=None, log=RunLog(log_path, secrets=("tok-secret",)), sleep=no_sleep)
+    with pytest.raises(CFError):
+        run(runner, request())
+    [entry] = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert entry["message"].startswith("x" * 295 + "***")
+    assert "tok-s" not in log_path.read_text(encoding="utf-8")
