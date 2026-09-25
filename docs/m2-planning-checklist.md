@@ -44,6 +44,8 @@ None.
   - 011 (0:52, "…here's the part that should mess with you.") speaks to "you", so the mascot there is defensible.
   - 009 (0:43, "Night is where human imagination got its training ground.") is general human experience, so it's borderline.
 - **Extras: fine.** `early_humans` is one cast entry, used across the fire scenes 001–005 and the other prehistoric scenes.
+- **Split-part text (checked by hand; §17 doesn't score it): correct after the final-review fix.** In all 8 split scenes, part a + part b equals the scene's corrected text, and neither part holds the whole sentence.
+- **Text-word filter: fired once.** In the second live run it caught one describe answer (`units[6].composition` asked for text), and the automatic retry fixed it. Spec §18 #5 expects the sample to plan without the filter firing, so a prompt tweak is noted for later.
 
 ## How the target was reached
 
@@ -55,3 +57,4 @@ None.
    - groups the pictures need go in the cast, even when a line only implies them.
 4. **Second live run:** the whole plan came from gpt-oss. The two describe hiccups were fixed by the automatic retry.
 5. **Task 13b:** the checklist now scores corrections by the scene's corrected text (the model's `from` text can be shorter than the expected phrase) and leaves merges to a person, as spec §17 says.
+6. **Final whole-branch review:** split parts had carried the whole scene's text (7 of 8 split scenes). Part text is now derived in code from each part's own words and corrections. A rerun from the cache (0 neurons, no API calls) regenerated `m2_out/plan.yaml` with the correct part text and the same scores as above.
