@@ -339,3 +339,27 @@ def test_a_network_error_that_names_the_secrets_is_masked(error):
     message = failing_call(handler, "image")
     assert LONG_TOKEN not in message and LONG_ACCOUNT not in message
     assert_no_secret(message)
+
+
+@pytest.mark.parametrize(
+    ("call", "response"),
+    [
+        ("chat", httpx.Response(200, text="not json")),
+        ("chat", httpx.Response(200, json={"unexpected": "shape"})),
+        ("image", httpx.Response(200, text="neither an image nor json")),
+        ("image", httpx.Response(200, json={"success": True, "result": {}})),
+        ("image", httpx.Response(200, json={"result": {"image": "abc"}})),  # not valid base64
+    ],
+    ids=["chat-not-json", "chat-shape", "image-not-json", "no-image", "bad-base64"],
+)
+def test_a_2xx_response_that_cant_be_read_was_possibly_billed(call, response):
+    """The call succeeded, so Cloudflare billed it, even though the answer is unusable."""
+
+    def handler(request):
+        request.read()
+        return response
+
+    with pytest.raises(CFError) as info:
+        chat(handler) if call == "chat" else generate(handler)
+    assert info.value.category is ErrorCategory.BAD_REQUEST
+    assert info.value.possibly_billed is True

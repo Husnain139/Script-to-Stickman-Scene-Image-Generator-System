@@ -116,3 +116,27 @@ def test_a_bare_meter_only_measures():
     assert run(meter, call).usd == pytest.approx(10 * 0.011 / 1000)
     assert meter.llm_estimate("m", 400, 100) == 0.0
     assert meter.llm_cost("m", 1, 1) is None
+
+
+def test_a_cancelled_call_is_recorded_as_possibly_billed(tmp_path):
+    """Ctrl+C cancels a request in flight, which may have been billed like a timeout."""
+    budget = Budget(BudgetSettings(), spent=0.0)
+    meter, ledger = metered(tmp_path, budget)
+    started = asyncio.Event()
+
+    async def never_returns():
+        started.set()
+        await asyncio.Event().wait()
+
+    async def go():
+        task = asyncio.create_task(meter.run(never_returns, kind="image", model=KLEIN_4B, estimate_usd=0.0023, unit="006a"))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(go())
+    [entry] = list(ledger.entries())
+    assert (entry.billing, entry.est_usd, entry.unit) == ("possibly_billed", 0.0023, "006a")
+    assert (meter.run_usd, meter.possibly_billed) == (0.0023, 1)
+    assert (budget.spent, budget.in_flight) == (0.0023, 0)

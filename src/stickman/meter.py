@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -32,7 +33,8 @@ def local_now() -> datetime:
 
 
 def billing_of(exc: CFError) -> Billing:
-    """A timeout may have been billed; an error response wasn't (spec §5.4, §9.5)."""
+    """A timeout, or a 2xx answer that can't be read, may have been billed; an error response wasn't
+    (spec §5.4, §9.5)."""
     return "possibly_billed" if exc.possibly_billed else "not_billed"
 
 
@@ -88,6 +90,10 @@ class Meter:
             result = await call()
         except CFError as exc:
             self._record(kind, model, unit, estimate_usd, billing_of(exc))
+            raise
+        except asyncio.CancelledError:
+            # Ctrl+C cancels a request in flight, which may have been billed, like a timeout.
+            self._record(kind, model, unit, estimate_usd, "possibly_billed")
             raise
         finally:
             if token is not None and self._budget is not None:

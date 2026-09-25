@@ -86,11 +86,14 @@ class CloudflareClient:
         if response_format is not None:
             body["response_format"] = response_format
         response = await self._post(f"{self._account_url}/ai/v1/chat/completions", json=body)
+        # From here the call has succeeded (2xx) and was billed, so an unreadable answer is possibly_billed.
         try:
             data = response.json()
         except ValueError as exc:
             raise CFError(
-                ErrorCategory.BAD_REQUEST, f"chat response is not JSON: {self._redact(response.text)[:300]}"
+                ErrorCategory.BAD_REQUEST,
+                f"chat response is not JSON: {self._redact(response.text)[:300]}",
+                possibly_billed=True,
             ) from exc
         if isinstance(data, dict) and "choices" not in data and isinstance(data.get("result"), dict):
             data = data["result"]
@@ -98,7 +101,9 @@ class CloudflareClient:
             text = data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:
             raise CFError(
-                ErrorCategory.BAD_REQUEST, f"unexpected chat response shape: {self._redact(str(data))[:300]}"
+                ErrorCategory.BAD_REQUEST,
+                f"unexpected chat response shape: {self._redact(str(data))[:300]}",
+                possibly_billed=True,
             ) from exc
         usage = data.get("usage")
         if not isinstance(usage, dict):
@@ -197,19 +202,24 @@ def _request_id(response: httpx.Response) -> str | None:
 
 
 def _extract_image(response: httpx.Response, redact: Callable[[str], str]) -> bytes:
+    """The image of a successful (2xx) call, which was billed: an unreadable answer is possibly_billed."""
     if response.headers.get("content-type", "").startswith("image/"):
         return response.content
     try:
         data = response.json()
     except ValueError as exc:
-        raise CFError(ErrorCategory.BAD_REQUEST, "image response is neither an image nor JSON") from exc
+        raise CFError(
+            ErrorCategory.BAD_REQUEST, "image response is neither an image nor JSON", possibly_billed=True
+        ) from exc
     result = data.get("result") if isinstance(data, dict) else None
     encoded = (result.get("image") if isinstance(result, dict) else None) or (
         data.get("image") if isinstance(data, dict) else None
     )
     if not encoded:
-        raise CFError(ErrorCategory.BAD_REQUEST, f"no image in response: {redact(str(data))[:300]}")
+        raise CFError(
+            ErrorCategory.BAD_REQUEST, f"no image in response: {redact(str(data))[:300]}", possibly_billed=True
+        )
     try:
         return base64.b64decode(encoded)
     except (binascii.Error, ValueError) as exc:
-        raise CFError(ErrorCategory.BAD_REQUEST, "image field is not valid base64") from exc
+        raise CFError(ErrorCategory.BAD_REQUEST, "image field is not valid base64", possibly_billed=True) from exc

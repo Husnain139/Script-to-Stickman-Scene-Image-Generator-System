@@ -63,3 +63,15 @@ def test_todays_neurons_count_from_midnight_utc(tmp_path):
     now = datetime(2026, 9, 24, 20, 0, tzinfo=PK)
     assert utc_day_start(now) == datetime(2026, 9, 24, 0, 0, tzinfo=UTC)
     assert ledger.neurons_since(utc_day_start(now)) == pytest.approx(207.59)
+
+
+def test_a_torn_line_that_cuts_a_multibyte_character_is_skipped(tmp_path):
+    """A non-ASCII project folder name (given with -p) puts multi-byte characters in the ledger."""
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.append(entry(datetime(2026, 9, 22, 14, 0, tzinfo=PK)))
+    torn = entry(datetime(2026, 9, 22, 14, 30, tzinfo=PK)).model_copy(update={"project": "2026-09-25_café"})
+    data = torn.model_dump_json().encode("utf-8")
+    with (tmp_path / "ledger.jsonl").open("ab") as handle:
+        handle.write(data[: data.index("é".encode("utf-8")) + 1])  # killed inside the two bytes of é
+    ledger.append(entry(datetime(2026, 9, 22, 15, 0, tzinfo=PK), unit="002a"))
+    assert [e.unit for e in ledger.entries()] == ["001", "002a"]

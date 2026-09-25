@@ -61,7 +61,8 @@ class Ledger:
         """Every readable entry. A line that isn't a valid entry, such as a torn write, is skipped."""
         if not self.path.is_file():
             return
-        with self.path.open(encoding="utf-8") as handle:
+        # errors="replace": a torn write can cut a multi-byte character; that line then fails validation.
+        with self.path.open(encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 if not line.strip():
                     continue
