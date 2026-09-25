@@ -1,4 +1,5 @@
 import asyncio
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -103,3 +104,13 @@ def test_curly_apostrophes_still_match(plan):
     assert curly in scene.corrected_text
     report = evaluate(plan, LINES)
     assert next(e for e in report.expected if e.source == "Zhuansi").exact is True
+
+
+def test_the_live_script_writes_its_report_beside_its_plan_not_over_the_docs():
+    """Only imports scripts/m2_checklist.py (main() is not run), so nothing is called or written."""
+    path = Path(__file__).parents[2] / "scripts" / "m2_checklist.py"
+    spec = importlib.util.spec_from_file_location("m2_checklist", path)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    assert script.REPORT == script.OUT / "m2-planning-checklist.md"
+    assert script.OUT.name == "m2_out"

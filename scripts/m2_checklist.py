@@ -2,7 +2,8 @@
 
 It makes LLM calls only: a few thousand neurons, inside the free daily allocation.
 Run it from the workspace root: uv run python scripts/m2_checklist.py
-It writes m2_out/plan.yaml, m2_out/logs/ and docs/m2-planning-checklist.md.
+It writes m2_out/plan.yaml, m2_out/logs/ and m2_out/m2-planning-checklist.md. It never touches
+docs/m2-planning-checklist.md, which holds hand-written sections: copy what you keep there by hand.
 Stages already answered are cached in m2_out/.cache/, so a rerun after a prompt change
 pays only for the stages whose prompt changed.
 """
@@ -28,7 +29,7 @@ from stickman.settings import load_config
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLE = ROOT / "tests" / "fixtures" / "scripts" / "first-sleep.txt"
 OUT = ROOT / "m2_out"
-REPORT = ROOT / "docs" / "m2-planning-checklist.md"
+REPORT = OUT / "m2-planning-checklist.md"  # git-ignored; the docs copy is edited by hand
 
 
 async def plan_sample(cfg, log: RunLog):
@@ -66,7 +67,7 @@ def main() -> int:
         f"corrections {report.corrections_found}/5 · lines 13+14 merged: {report.lines_13_14_merged} · "
         f"merges to judge: {len(report.merges_to_judge)} · mascot {report.mascot_score:.0%} · target met: {report.meets_target}"
     )
-    print(f"report: {REPORT}")
+    print(f"report: {REPORT} (copy what you keep into docs/m2-planning-checklist.md by hand)")
     return 0 if report.meets_target else 1
 
 
