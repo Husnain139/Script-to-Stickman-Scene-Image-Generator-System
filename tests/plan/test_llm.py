@@ -59,6 +59,13 @@ def test_invalid_reply_is_retried_with_the_errors(fake_chat, stage_runner):
     assert feedback.endswith("Return corrected JSON only.")
 
 
+def test_a_retry_shows_the_model_its_whole_previous_reply(fake_chat, stage_runner):
+    long_reply = '{"animal": "dog", "note": "' + "x" * 20000 + '"}'  # live describe replies ran to 7,390 chars
+    chat = fake_chat([long_reply, GOOD])
+    assert run(stage_runner(chat), request()).legs == 4
+    assert chat.calls[1]["messages"][2]["content"] == long_reply
+
+
 def test_stage_check_failures_count_as_invalid(fake_chat, stage_runner):
     chat = fake_chat(['{"animal": "spider", "legs": 8}', GOOD])
     assert run(stage_runner(chat), request(four_legs)).legs == 4

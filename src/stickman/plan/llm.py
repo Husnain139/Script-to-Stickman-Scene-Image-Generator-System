@@ -25,7 +25,7 @@ M = TypeVar("M", bound=BaseModel)
 
 STAGE_MAX_TOKENS = 16384  # gpt-oss spends part of this on reasoning; only used tokens are billed
 RETRY_MESSAGE = "Your previous JSON had these errors:\n{errors}\nReturn corrected JSON only."
-PREVIOUS_REPLY_CHARS = 6000
+PREVIOUS_REPLY_CHARS = 32000  # the whole previous reply: live describe replies ran to 7,390 chars
 
 CUT_OFF_ERROR = (
     "the reply was cut off at the token limit before the JSON was complete; "
