@@ -1,5 +1,10 @@
 import hashlib
+import io
+import os
+import shutil
+import subprocess
 from datetime import date
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -69,3 +74,80 @@ def test_a_reference_copy_must_be_a_small_png(tmp_path, size, kind, message):
 def test_a_missing_reference_is_a_config_error(tmp_path):
     with pytest.raises(ConfigError, match="can't read"):
         ReferenceFiles(tmp_path, ref_max_side=512).load(tmp_path / "library" / "style" / "anchor_v1_ref.png")
+
+
+def dir_link(link, target):
+    """A directory link that needs no admin rights: a junction on Windows, a symlink elsewhere."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
+    else:
+        os.symlink(target, link, target_is_directory=True)
+
+
+def stock_image(folder):
+    return png(folder / "stock1.png", size=(300, 200))
+
+
+def test_a_linked_stock_folder_is_refused(tmp_path):
+    """style_refs/ is itself a link to the real folder, so resolve() leaves style_refs/ behind."""
+    real = tmp_path / "stock_real"
+    stock_image(real)
+    dir_link(tmp_path / "style_refs", real)
+    with pytest.raises(ConfigError, match="never sent"):
+        ReferenceFiles(tmp_path, ref_max_side=512).load(tmp_path / "style_refs" / "stock1.png")
+
+
+def test_a_link_in_library_to_the_stock_folders_target_is_refused(tmp_path):
+    real = tmp_path / "stock_real"
+    stock_image(real)
+    dir_link(tmp_path / "style_refs", real)
+    dir_link(tmp_path / "library" / "linked", real)
+    with pytest.raises(ConfigError, match="never sent"):
+        ReferenceFiles(tmp_path, ref_max_side=512).load(tmp_path / "library" / "linked" / "stock1.png")
+
+
+def test_a_hard_link_to_a_stock_image_is_refused(tmp_path):
+    stock = stock_image(tmp_path / "style_refs")
+    link = tmp_path / "library" / "style" / "anchor_v1_ref.png"
+    link.parent.mkdir(parents=True)
+    os.link(stock, link)
+    with pytest.raises(ConfigError, match="never sent"):
+        ReferenceFiles(tmp_path, ref_max_side=512).load(link)
+
+
+def test_a_hard_link_is_refused_by_identity_even_after_the_stock_image_changed(tmp_path):
+    stock = stock_image(tmp_path / "style_refs")
+    link = tmp_path / "library" / "style" / "anchor_v1_ref.png"
+    link.parent.mkdir(parents=True)
+    os.link(stock, link)
+    files = ReferenceFiles(tmp_path, ref_max_side=512)
+    buffer = io.BytesIO()
+    Image.new("RGB", (200, 100), "black").save(buffer, format="PNG")
+    stock.write_bytes(buffer.getvalue())  # rewritten in place: the same file, new bytes
+    with pytest.raises(ConfigError, match="never sent"):
+        files.load(link)
+
+
+@pytest.mark.skipif(os.name != "nt", reason=r"\\?\ paths are Windows paths")
+def test_a_long_path_prefix_does_not_hide_a_stock_image(tmp_path):
+    stock = stock_image(tmp_path / "style_refs")
+    long_path = Path(r"\\?" + "\\" + str(stock.resolve()))  # \\?\C:\...\style_refs\stock1.png
+    assert long_path.is_file()
+    with pytest.raises(ConfigError, match="never sent"):
+        ReferenceFiles(tmp_path, ref_max_side=512).load(long_path)
+
+
+def test_a_copy_of_a_stock_image_is_refused(tmp_path):
+    stock = stock_image(tmp_path / "style_refs")
+    copy = tmp_path / "library" / "style" / "anchor_v1_ref.png"
+    copy.parent.mkdir(parents=True)
+    shutil.copyfile(stock, copy)
+    with pytest.raises(ConfigError, match="never sent"):
+        ReferenceFiles(tmp_path, ref_max_side=512).load(copy)
+
+
+def test_other_references_are_still_read_when_style_refs_has_images(tmp_path):
+    stock_image(tmp_path / "style_refs")
+    path = png(tmp_path / "library" / "style" / "anchor_v1_ref.png")
+    assert ReferenceFiles(tmp_path, ref_max_side=512).load(path).path == "library/style/anchor_v1_ref.png"

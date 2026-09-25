@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,6 +56,35 @@ def reference_paths(
     return paths
 
 
+def _stock_images(folder: Path) -> tuple[frozenset[tuple[int, int]], frozenset[str]]:
+    """The identity (device, file id) and the sha256 of every file under `folder`, links followed.
+    They catch a stock image that a path check can't: through a link, a \\\\?\\ path, an 8.3 name, a
+    hard link or a copy. The files are only read here, never sent."""
+    identities: set[tuple[int, int]] = set()
+    digests: set[str] = set()
+    walked: set[str] = set()
+    for directory, subdirectories, names in os.walk(folder, followlinks=True):
+        real = os.path.realpath(directory)
+        if real in walked:  # a link back to a folder already walked
+            subdirectories.clear()
+            continue
+        walked.add(real)
+        for name in names:
+            path = os.path.join(directory, name)
+            try:
+                info = os.stat(path)
+            except OSError:
+                continue
+            if info.st_ino:  # 0 where the file system has no file ids
+                identities.add((info.st_dev, info.st_ino))
+            try:
+                with open(path, "rb") as handle:
+                    digests.add(hashlib.file_digest(handle, "sha256").hexdigest())
+            except OSError:
+                continue
+    return frozenset(identities), frozenset(digests)
+
+
 class ReferenceFiles:
     """Reads each reference copy once per run, and refuses one that must never be sent."""
 
@@ -62,6 +92,9 @@ class ReferenceFiles:
         self._workspace = workspace.resolve()
         self._max_side = ref_max_side
         self._loaded: dict[Path, RefImage] = {}
+        forbidden = self._workspace / FORBIDDEN_DIR
+        self._forbidden = (forbidden, forbidden.resolve())  # style_refs/ itself may be a link
+        self._stock_ids, self._stock_digests = _stock_images(forbidden)
 
     def load(self, path: Path) -> RefImage:
         resolved = path.resolve()
@@ -70,12 +103,19 @@ class ReferenceFiles:
         return self._loaded[resolved]
 
     def _read(self, path: Path, resolved: Path) -> RefImage:
-        if resolved.is_relative_to(self._workspace / FORBIDDEN_DIR):
+        if any(resolved.is_relative_to(folder) for folder in self._forbidden):
             raise ConfigError(f"{path}: images in {FORBIDDEN_DIR}/ are never sent to any API")
         try:
             data = resolved.read_bytes()
+            info = resolved.stat()
         except OSError as exc:
             raise ConfigError(f"{path}: can't read the reference image: {exc.strerror or exc}") from exc
+        digest = hashlib.sha256(data).hexdigest()
+        if (info.st_ino and (info.st_dev, info.st_ino) in self._stock_ids) or digest in self._stock_digests:
+            raise ConfigError(
+                f"{path}: the same image as one in {FORBIDDEN_DIR}/ (a link or a copy); "
+                f"images in {FORBIDDEN_DIR}/ are never sent to any API"
+            )
         try:
             with Image.open(io.BytesIO(data)) as image:
                 size, kind = image.size, image.format
@@ -90,4 +130,4 @@ class ReferenceFiles:
             )
         inside = resolved.is_relative_to(self._workspace)
         shown = resolved.relative_to(self._workspace).as_posix() if inside else resolved.as_posix()
-        return RefImage(shown, "sha256:" + hashlib.sha256(data).hexdigest(), data, size)
+        return RefImage(shown, "sha256:" + digest, data, size)
