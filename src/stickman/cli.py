@@ -402,7 +402,12 @@ def _generate(workspace: Path, project: Path | None, *, force: bool, limit: int 
     try:
         lock.acquire()
     except LockHeld as exc:
-        _fail(f"{exc}. Let it finish, or stop it, then run this again.", EXIT_USER_ERROR)
+        # Windows can give a crashed run's PID to another process, so the lock may only look held.
+        _fail(
+            f"{exc}. Let it finish, or stop it, then run this again.\n"
+            f"If no stickman is running, delete `{lock.path}`.",
+            EXIT_USER_ERROR,
+        )
     try:
         _generate_locked(cfg, ctx, directory, plan, builder, expected, lock, force=force, limit=limit)
     except KeyboardInterrupt:

@@ -112,8 +112,21 @@ def test_the_synthetic_plan_is_about_five_minutes():
     assert 240 <= plan.duration_end <= 300
 
 
+def random_kills(rng):
+    return [rng.randint(1, 400) for _ in range(KILLS)]
+
+
+def kills_in_recovery(rng):
+    """One kill mid-run, then kills at the next runs' first writes: recover()'s own writes
+    (_restore_current_images, then store.save()), each run killed one write step further in."""
+    return [rng.randint(5, 120), 1, 2, 3]
+
+
+@pytest.mark.parametrize("schedule", [random_kills, kills_in_recovery], ids=["random", "in_recovery"])
 @pytest.mark.parametrize("seed", range(6))
-def test_resume_after_kills_finishes_with_no_lost_or_duplicate_images(tmp_path, monkeypatch, fake_images, jpeg, seed):
+def test_resume_after_kills_finishes_with_no_lost_or_duplicate_images(
+    tmp_path, monkeypatch, fake_images, jpeg, seed, schedule
+):
     rng = random.Random(seed)
     killer = Killer()
     for module in (state, recovery, renderer):
@@ -122,9 +135,10 @@ def test_resume_after_kills_finishes_with_no_lost_or_duplicate_images(tmp_path, 
     project.mkdir(parents=True)
     plan = synthetic_plan()
     client = fake_images(lambda call: killer.tick() or jpeg)  # killed while the request is out
+    arms = schedule(rng)
     kills = 0
     while True:
-        killer.arm(rng.randint(1, 400) if kills < KILLS else None)
+        killer.arm(arms[kills] if kills < len(arms) else None)
         try:
             run_once(tmp_path, project, plan, client)
             break

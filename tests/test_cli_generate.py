@@ -129,6 +129,8 @@ def test_a_second_process_is_refused(workspace, monkeypatch, fake_images):
     result = generate(workspace)
     assert result.exit_code == 1, result.output
     assert "another stickman process (PID 4242)" in result.output
+    lock = (project(workspace) / ".lock").resolve()
+    assert f"If no stickman is running, delete `{lock}`." in result.output
     assert client.calls == []
     assert (project(workspace) / ".lock").read_text(encoding="ascii") == "4242"
 
@@ -186,3 +188,14 @@ def test_errors_that_echo_the_account_id_are_masked(workspace, monkeypatch, fake
     logs = "".join(p.read_text(encoding="utf-8") for p in (project(workspace) / "logs").glob("run-*.jsonl"))
     assert "accounts/***/ai/run" in logs
     assert "acc123" not in logs
+
+
+def test_ctrl_c_stops_the_run_keeps_finished_images_and_releases_the_lock(workspace, monkeypatch, fake_images, jpeg):
+    (workspace / "config").mkdir()
+    (workspace / "config" / "settings.yaml").write_text("render:\n  concurrency: 1\n", encoding="utf-8")
+    use_images(monkeypatch, fake_images([jpeg, KeyboardInterrupt()]))  # Ctrl+C during the second request
+    result = generate(workspace)
+    assert result.exit_code == 130, result.output
+    assert "Stopped. Finished images are kept; run `stickman resume` to continue." in result.output
+    assert not (project(workspace) / ".lock").exists()
+    assert statuses(workspace)["001"] == "generated"

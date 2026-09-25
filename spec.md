@@ -846,7 +846,7 @@ Run over units in time order:
   7. Apply the QC retries, if needed (§11.3).
   8. Set the final status and save the state.
 - Progress is shown in the CLI with rich: overall bar, per-status counts, cost so far.
-- **[M3]** There's no QC step until M4: a saved image makes the unit `generated`. The history file is written first, then `state.json`, then the current copy. A kill between any two is put right when the next run starts (§5.2).
+- **[M3]** There's no QC step until M4: a saved image makes the unit `generated`. The history file is written first, then `state.json`, then the current copy. A kill between any two is put right when the next run starts (§5.2). The status is saved as `generating` before the budget check, which runs before every attempt; a unit the budget stops goes back to `planned`.
 
 ### 10.4 Fingerprints and stale detection
 - **What the fingerprint covers:** `fingerprint = sha256(canonical_json({visual fields of the unit, image_prompt, seed-override, model, aspect, width, height, style_version, [sha256 of each reference file used]}))`, where:
