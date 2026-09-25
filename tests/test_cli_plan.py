@@ -64,8 +64,15 @@ def test_new_writes_a_valid_plan(workspace, monkeypatch, sample_chat):
     plan = load_plan(folder(workspace) / "plan.yaml").plan
     assert (plan.project, plan.aspect, len(plan.units())) == ("first-sleep", "16:9", 36)
     assert (folder(workspace) / "script.txt").read_bytes() == SAMPLE.read_bytes()
+    assert list((folder(workspace) / "logs").glob("run-*.jsonl"))
+
+
+def test_the_run_log_masks_the_token(workspace, monkeypatch, fake_chat):
+    use_chat(monkeypatch, fake_chat([CFError(ErrorCategory.BAD_REQUEST, "rejected request from tok-secret")]))
+    assert new(workspace).exit_code == 1
     logs = "".join(p.read_text(encoding="utf-8") for p in (folder(workspace) / "logs").glob("run-*.jsonl"))
-    assert logs and "tok-secret" not in logs
+    assert "rejected request from ***" in logs
+    assert "tok-secret" not in logs
 
 
 def test_the_name_option_sets_the_project_folder(workspace, monkeypatch, sample_chat):
