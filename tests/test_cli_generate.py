@@ -1,4 +1,6 @@
+import io
 import json
+from collections import Counter
 
 import pytest
 from rich.console import Console
@@ -8,6 +10,7 @@ from stickman import cli
 from stickman.cf.errors import CFError, ErrorCategory
 from stickman.plan.models import parse_plan
 from stickman.plan.store import load_plan, to_document, update_unit, write_plan
+from stickman.render.rewrite import SOFTEN_PREFIX
 from stickman.render.state import StateStore
 
 runner = CliRunner()
@@ -60,18 +63,22 @@ def test_generate_makes_every_units_image_and_prints_the_summary(workspace, monk
     assert result.exit_code == 0, result.output
     assert result.output.splitlines()[0] == f"Project: {FOLDER}"
     assert f"Generating 3 unit(s) on {KLEIN_4B}" in result.output
-    assert "so about 48 more image(s) fit" in result.output
+    assert f"Generating 3 unit(s) on {KLEIN_4B}, each checked by @cf/qwen/qwen3.8-27b" in result.output
+    assert "so about 24 more unit(s) fit (image and check)" in result.output
     assert "Run finished · 3 units · done 3 · needs_review 0 · failed 0 · stale 0 · skipped 0" in result.output
     assert statuses(workspace) == {"001": "generated", "002a": "generated", "002b": "generated"}
     assert sorted(p.name for p in (project(workspace) / "images").glob("*.png")) == [
         "001_00-00.0.png", "002a_00-04.0.png", "002b_00-07.0.png"]
     entries = [json.loads(line) for line in (workspace / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert [(e["kind"], e["billing"], e["project"]) for e in entries] == [("image", "billed", FOLDER)] * 3
+    assert Counter(e["kind"] for e in entries) == {"image": 3, "vision": 3}
+    assert {(e["billing"], e["project"]) for e in entries} == {("billed", FOLDER)}
     assert list((project(workspace) / "logs").glob("run-*.jsonl"))
     assert not (project(workspace) / ".lock").exists()
 
 
 def test_a_daily_limit_pauses_and_resume_continues(workspace, monkeypatch, fake_images, jpeg):
+    (workspace / "config").mkdir()
+    (workspace / "config" / "settings.yaml").write_text("render:\n  concurrency: 1\n", encoding="utf-8")
     daily = CFError(ErrorCategory.DAILY_LIMIT, "daily free allocation", status=429)
     use_images(monkeypatch, fake_images(lambda call: jpeg if call["prompt"] == "prompt for 001" else daily))
     result = generate(workspace)
@@ -199,3 +206,75 @@ def test_ctrl_c_stops_the_run_keeps_finished_images_and_releases_the_lock(worksp
     assert "Stopped. Finished images are kept; run `stickman resume` to continue." in result.output
     assert not (project(workspace) / ".lock").exists()
     assert statuses(workspace)["001"] == "generated"
+
+
+def test_a_unit_that_fails_qc_is_retried_then_listed_for_review(workspace, monkeypatch, fake_images, vision):
+    def check(model, messages):
+        failing = "Expected: Idea 001." in messages[0]["content"][0]["text"]
+        return vision.reply(character_count=vision.figures(messages), has_text=failing, text_seen="ZZZ" if failing else "")
+
+    client = use_images(monkeypatch, fake_images(chat=check))
+    result = generate(workspace)
+    assert result.exit_code == 0, result.output
+    assert "done 2 · needs_review 1 · failed 0" in result.output
+    assert "Needs review: 001 (text)" in result.output
+    assert sum(1 for call in client.calls if call["prompt"].endswith("prompt for 001")) == 3  # 1 + retry.qc_max
+    assert statuses(workspace)["001"] == "needs_review"
+
+
+def describe_or_check(vision):
+    """Plays the planner's describe stage (a soften) and the vision model."""
+    def reply(model, messages):
+        if messages[0]["role"] != "system":
+            return vision.passing(model, messages)
+        line = next(row for row in messages[1]["content"].splitlines() if row.startswith("UNITS: "))
+        [unit] = json.loads(line[len("UNITS: "):])
+        return json.dumps({"units": [{
+            "id": unit["id"], "corrected_text": unit["scene_corrected_text"], "visual_idea": "A calm moon over a hut",
+            "visual_type": "metaphor", "shot": "wide", "time_of_day": "night",
+            "characters": [{"ref": "mascot", "action": "resting", "emotion": "calm"}], "mood": None,
+            "setting": ["hut"], "props": [], "composition": "hut centred", "energy_marks": [],
+            "softened": True, "softened_reason": "a hut instead"}]})
+    return reply
+
+
+def test_a_dark_image_is_softened_in_plan_yaml_and_named_in_the_summary(workspace, monkeypatch, fake_images, vision, drawings, jpeg):
+    buffer = io.BytesIO()
+    drawings.all_black().save(buffer, format="JPEG")
+    black = buffer.getvalue()
+    use_images(monkeypatch, fake_images(lambda call: black if call["prompt"] == "prompt for 001" else jpeg,
+                                        chat=describe_or_check(vision)))
+    result = generate(workspace)
+    assert result.exit_code == 0, result.output
+    assert "Softened after a safety filter (softened: true in plan.yaml): 001" in result.output
+    unit = load_plan(project(workspace) / "plan.yaml").plan.units()[0]
+    assert (unit.softened, unit.softened_reason, unit.visual_idea) == (True, SOFTEN_PREFIX + "a hut instead", "A calm moon over a hut")
+    assert statuses(workspace)["001"] == "generated"
+    kinds = Counter(json.loads(line)["kind"] for line in (workspace / "ledger.jsonl").read_text(encoding="utf-8").splitlines())
+    assert kinds["llm"] == 1
+
+
+def test_images_made_before_qc_are_checked_without_a_new_image(workspace, monkeypatch, fake_images):
+    use_images(monkeypatch, fake_images())
+    assert generate(workspace).exit_code == 0
+    path = project(workspace) / "state.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["units"]["001"]["versions"][0]["qc"] = None  # as M3 left it
+    path.write_text(json.dumps(data), encoding="utf-8")
+    client = use_images(monkeypatch, fake_images())
+    result = generate(workspace)
+    assert result.exit_code == 0, result.output
+    assert "Checking 1 image(s) made before QC existed; they are not made again." in result.output
+    assert client.calls == [] and len(client.chat_calls) == 1
+    assert json.loads(path.read_text(encoding="utf-8"))["units"]["001"]["versions"][0]["qc"]["passed"] is True
+
+
+def test_turning_the_vision_check_off_leaves_the_pixel_checks(workspace, monkeypatch, fake_images):
+    (workspace / "config").mkdir()
+    (workspace / "config" / "settings.yaml").write_text("qc:\n  vision: false\n", encoding="utf-8")
+    client = use_images(monkeypatch, fake_images())
+    result = generate(workspace)
+    assert result.exit_code == 0, result.output
+    assert "pixel checks only (qc.vision is off)" in result.output
+    assert "so about 48 more unit(s) fit" in result.output
+    assert client.chat_calls == [] and set(statuses(workspace).values()) == {"generated"}

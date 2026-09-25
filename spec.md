@@ -376,6 +376,12 @@ scenes:
 - A stale unit whose fingerprint matches again goes back to `approved` if it has an approved version, else to `generated`. From M4 it goes to `needs_review` when its current version failed QC.
 - `qc` stays null until M4.
 
+**[M4] QC results and statuses:**
+- `qc` is `{pixel, vision, vision_error, expected_figures, reference, passed, reason}`. The key is `passed`: `pass` is a Python keyword.
+- While a unit's chain (its image, QC and retries) runs, it stays `generating`. Each retry is a new version whose `retry_of` points to the version it fixes. The chain runs from the current version back through `retry_of`.
+- A run stopped mid-chain (daily limit, budget, outage, Ctrl+C) leaves the unit `planned` with its versions. A killed one leaves it `generating`, which the next run resets to `planned`. Either way the next run continues the same chain. An image saved just before a kill is adopted with `qc: null` and checked.
+- A unit counts as needing work when it is `planned` or `failed`, or `generated` with a current version QC hasn't checked. That covers images made before M4.
+
 ### 5.3 Character library entry (`library/characters/<id>/character.yaml`)
 ```yaml
 schema_version: 1
@@ -676,6 +682,14 @@ the pose described above.
 
 **Locked units** (`prompt_locked: true`): only seed changes and added fixed clauses are applied. LLM rewrites (`weak_idea` retry 2 and `safety_filtered`) are skipped, and the unit becomes `needs_review`.
 
+**[M4] How the fixes are applied:**
+- A retry applies the fix for every reason fixed so far in its chain, each once, in first-seen order. The strict clause goes at the start once, and the sentences go at the end.
+- Every retry uses a new random seed, even when the plan pins one.
+- The `text` props rewrite adds the wording from `visual_rules.yaml` `text_free` (whole-word keys, plurals too) to each matching prop on the `Props:` line. For example: `small wall clock (a round face with two hands and no numerals)`. The table has defaults in code, so older config files still get it.
+- Without the mascot in reference slot 1, the `mascot_mismatch` sentence says "…exactly this head and hair: {identity}".
+- `safety_filtered` is softened once. The soften's `softened_reason` starts with `safety filter: `, and a later run reads that to know. `weak_idea`'s redesign is its second retry for that reason.
+- A soften or redesign reruns stage 3 for the unit (like `replan`) and writes `plan.yaml` hash-checked. If it fails, the unit becomes `needs_review` with the error.
+
 ---
 
 ## 8. Characters: bootstrap, sheets and library
@@ -737,6 +751,13 @@ JSON: {model, messages:[{role:system,…},{role:user,…}], temperature, max_tok
 - **[M0]** Settled: `@cf/qwen/qwen3.8-27b` accepts **2 images per call** as `image_url` content parts. See `docs/m0-findings.md`.
 - **Fallback when only one image is accepted:** not needed — 2 images per call are accepted (above). (If this ever regresses: send one composite made by the tool, with the mascot reference on the left and the unit image (scaled to 768 px tall) on the right. The prompt then says *"left = reference, right = image to check"*.)
 - **Reply parsing:** qwen's replies are **not clean JSON** — expect a leading `\n\n`, or the JSON wrapped in a ` ```json ` fence, plus a separate `reasoning` field like gpt-oss's. Extract JSON the same lenient way as §9.3 (first `{` to last `}`); a markdown fence's backticks fall outside that range, so it still works. **[M0]** See `docs/m0-findings.md`.
+
+**[M4] The call:**
+- One user message: the §11.2 prompt with its schema, the unit image as a PNG (RGB, at most 1024 px on the long side), then the mascot reference when one is sent. `temperature` is 0 and `max_tokens` 2048.
+- There are up to 2 validation attempts, the second with the errors fed back.
+- The daily limit or a rejected token stops the run. Any other failure (after the usual retries) sets `vision_error`, and the unit becomes `needs_review` without a new image.
+- The mascot reference is the mascot's reference copy once bootstrap approved it. `mascot_mismatch` counts only when it was sent.
+- `qc.vision: false` turns the vision check off.
 
 ### 9.5 Sorting errors into categories (the `cf` module)
 
@@ -848,6 +869,8 @@ Run over units in time order:
 - Progress is shown in the CLI with rich: overall bar, per-status counts, cost so far.
 - **[M3]** There's no QC step until M4: a saved image makes the unit `generated`. The history file is written first, then `state.json`, then the current copy. A kill between any two is put right when the next run starts (§5.2). The status is saved as `generating` before the budget check, which runs before every attempt; a unit the budget stops goes back to `planned`.
 
+**[M4]** A unit holds its concurrency slot for its whole chain, so vision calls share the limit. Pixel checks run in a worker thread. The current copy `images/<stem>.png` is written when the unit finishes, after `state.json`.
+
 ### 10.4 Fingerprints and stale detection
 - **What the fingerprint covers:** `fingerprint = sha256(canonical_json({visual fields of the unit, image_prompt, seed-override, model, aspect, width, height, style_version, [sha256 of each reference file used]}))`, where:
   - canonical JSON means sorted keys, UTF-8 and no whitespace
@@ -862,6 +885,8 @@ Run finished · 36 units · done 31 · needs_review 3 · failed 1 · stale 0 · 
 Cost this run ≈ $0.74 (2 possibly billed) · week ≈ $6.12 / $15.00 · time 6m12s
 Failed: 024b (bad_request: …)   Needs review: 013a (text), 020 (safety_filtered), 026b (weak_idea)
 ```
+
+**[M4]** The summary lists `Needs review: <unit> (<reason>)`, and units softened in the run, on their own lines.
 
 ---
 
@@ -890,6 +915,11 @@ Failed: 024b (bad_request: …)   Needs review: 013a (text), 020 (safety_filtere
 4. **Colour, filled background, black areas:** `style` or `background_filled`, as in the table.
 
 So `safety_filtered` is only ever given to a **dark or blurred** image, never to a blank white one. A dark image that still has line detail fails as `background_filled`. All values are initial guesses and are tuned in M5.
+
+**[M4]**
+- The largest black area is measured only when all black pixels together are over `max_black_blob_fraction`, since no single area can be larger. Otherwise it's recorded as null.
+- In step 4, a filled background outranks colour, as in the §11.3 order.
+- The spec defaults were checked against 23 real Klein images: all pass.
 
 ### 11.2 Vision check
 Runs only if the pixel checks pass, since there's no point paying for the vision call otherwise.
@@ -924,6 +954,11 @@ Expected figures: {N} ({list of cast names with figure counts}).
 - **Choosing the current version:** after the last retry, the best-scoring version (passes first, then the highest `matches_visual_idea`) becomes `current_version`. The status is `generated` if that version passes, and `needs_review` otherwise.
 - **Recording:** every QC result is stored with its version and copied into the manifest.
 - **Honest limitation:** the vision model will sometimes miss small text or miscount limbs. The final gallery review is the real gate.
+
+**[M4]**
+- **Which version becomes current:** the best among the chain's versions made from the unit's latest fields (a soften changes them), so the current image never shows an old design.
+- **`vision_error`** (the checker gave no usable answer) fails without a retry, and ranks after every other reason.
+- **A refused image request** counts as `safety_filtered` with no image.
 
 ---
 
@@ -1011,6 +1046,11 @@ Exit codes: `0` success; `1` user or validation error; `2` a pause (budget, dail
 - Their other options are `--force` (go past the weekly budget) and `--limit N`.
 - Both hold the project's `.lock` while they run.
 - Ctrl+C exits with code 130; finished images are kept.
+
+**[M4]**
+- The run-start line gives the cost of the images and their checks. On the free plan it says how many more units (image and check) fit today.
+- Images made before QC existed are checked, not made again.
+- A run that ends with `needs_review` units exits 0.
 
 ---
 

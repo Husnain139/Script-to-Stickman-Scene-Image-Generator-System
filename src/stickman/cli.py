@@ -36,13 +36,15 @@ from stickman.plan.planner import (
     replan_unit,
 )
 from stickman.plan.store import PlanChangedError, load_plan, to_document, update_unit, write_plan
-from stickman.pricing import format_usd, load_pricing, usd_neurons
+from stickman.pricing import format_usd, llm_cost_usd, load_pricing, usd_neurons
 from stickman.project import ProjectError, check_unplanned, choose_project_dir, create_project, resolve_project, slugify
+from stickman.qc.vision import TYPICAL_TOKENS
 from stickman.render.jobs import JobBuilder, JobError, RenderContext, RenderJob
 from stickman.render.lock import LockHeld, ProjectLock
 from stickman.render.recovery import recover
 from stickman.render.renderer import Renderer, RunResult, StopReason
-from stickman.render.state import StateError, StateStore
+from stickman.render.rewrite import PlanRewriter
+from stickman.render.state import StateError, StateStore, needs_work
 from stickman.render.summary import summary_lines
 from stickman.runlog import RunLog, mask
 from stickman.settings import (
@@ -339,7 +341,6 @@ def replan(
     console.print(escape(f"Replanned {unit}: {updated.visual_idea}"))
 
 
-TO_GENERATE = ("planned", "failed")
 OUTAGE_MESSAGE = "Possible outage — run `stickman resume` later."
 EXIT_INTERRUPTED = 130
 
@@ -437,11 +438,11 @@ def _generate_locked(
         _fail(f"{exc}. Nothing was changed.", EXIT_USER_ERROR)
     for note in recover(store, expected):
         console.print(escape(note))
-    todo = [unit for unit in plan.units() if store.unit(unit.id).status in TO_GENERATE]
+    todo = [unit for unit in plan.units() if needs_work(store.unit(unit.id))]
     if limit is not None:
         todo = todo[:limit]
     if not todo:
-        console.print("Nothing to generate: every unit has an image, or is stale (never regenerated automatically).")
+        console.print("Nothing to generate: every unit has a checked image, or is stale (never regenerated automatically).")
         return
     try:
         jobs = builder.jobs(todo)
@@ -455,37 +456,59 @@ def _generate_locked(
         warn=lambda message: console.print(f"[yellow]{escape(message)}[/yellow]"),
     )
     meter = Meter(project=directory.name, ledger=ledger, budget=budget, pricing=ctx.pricing)
-    _print_run_start(jobs, cfg, ctx, ledger, now)
-    result = asyncio.run(_render(cfg, store, meter, jobs, log))
+    _print_run_start(jobs, store, cfg, ctx, ledger, now)
+    result, softened = asyncio.run(_render(cfg, ctx, directory, store, meter, builder, jobs, log))
     for line in summary_lines(
         store.state, [unit.id for unit in plan.units()], result=result, run_usd=meter.run_usd,
         possibly_billed=meter.possibly_billed, week_usd=budget.spent, weekly_usd=cfg.settings.budget.weekly_usd,
+        softened=softened,
     ):
         console.print(escape(log.mask(line)))
     _exit_for(result, log)
 
 
-def _print_run_start(jobs: list[RenderJob], cfg: AppConfig, ctx: RenderContext, ledger: Ledger, now: datetime) -> None:
-    estimate = sum(job.estimate_usd for job in jobs)
-    console.print(escape(
-        f"Generating {len(jobs)} unit(s) on {jobs[0].model} ≈ {format_usd(estimate)} (≈ {usd_neurons(estimate):,.0f} neurons)."
-    ))
+def _check_usd(cfg: AppConfig, ctx: RenderContext) -> float:
+    """What a typical vision check costs (qwen's tokens; Task 11 of the M4 plan measured them)."""
+    if not cfg.settings.qc.vision:
+        return 0.0
+    price = ctx.pricing.llm(cfg.settings.llm.vision_model)
+    return 0.0 if price is None else llm_cost_usd(price, *TYPICAL_TOKENS)
+
+
+def _print_run_start(jobs: list[RenderJob], store: StateStore, cfg: AppConfig, ctx: RenderContext, ledger: Ledger, now: datetime) -> None:
+    check_only = {job.unit_id for job in jobs if store.unit(job.unit_id).status == "generated"}  # made before QC
+    to_make = [job for job in jobs if job.unit_id not in check_only]
+    check = _check_usd(cfg, ctx)
+    estimate = sum(job.estimate_usd for job in to_make) + check * len(jobs)
+    how = (f", each checked by {cfg.settings.llm.vision_model}" if cfg.settings.qc.vision
+           else ", pixel checks only (qc.vision is off)")
+    cost = f"≈ {format_usd(estimate)} (≈ {usd_neurons(estimate):,.0f} neurons)"
+    if to_make:
+        console.print(escape(f"Generating {len(to_make)} unit(s) on {to_make[0].model}{how} {cost}."))
+    if check_only:
+        console.print(escape(f"Checking {len(check_only)} image(s) made before QC existed; they are not made again."))
+        if not to_make:
+            console.print(escape(f"Cost {cost}."))
     if cfg.settings.account.plan != "free":
         return
     used = ledger.neurons_since(utc_day_start(now))
     allowance = ctx.pricing.free_daily_neurons
-    per_image = usd_neurons(estimate / len(jobs))
-    fit = max(0, math.floor((allowance - used) / per_image)) if per_image > 0 else len(jobs)
+    per_unit = usd_neurons(estimate / len(jobs))
+    fit = max(0, math.floor((allowance - used) / per_unit)) if per_unit > 0 else len(jobs)
+    what = "image and check" if cfg.settings.qc.vision else "image"
     line = (
         f"Free plan: about {used:,.0f} of {allowance:,.0f} neurons used today (UTC), "
-        f"so about {fit} more image(s) fit before the reset at {_reset_time(now)}."
+        f"so about {fit} more unit(s) fit ({what}) before the reset at {_reset_time(now)}."
     )
     if fit < len(jobs):
         line += " The run pauses at the daily limit; `stickman resume` continues after the reset."
     console.print(escape(line))
 
 
-async def _render(cfg: AppConfig, store: StateStore, meter: Meter, jobs: list[RenderJob], log: RunLog) -> RunResult:
+async def _render(
+    cfg: AppConfig, ctx: RenderContext, directory: Path, store: StateStore, meter: Meter, builder: JobBuilder,
+    jobs: list[RenderJob], log: RunLog,
+) -> tuple[RunResult, list[str]]:
     columns = (TextColumn("{task.description}"), BarColumn(), MofNCompleteColumn(), TimeElapsedColumn())
     with Progress(*columns, console=console, transient=True) as progress:
         task = progress.add_task("Generating", total=len(jobs))
@@ -495,16 +518,23 @@ async def _render(cfg: AppConfig, store: StateStore, meter: Meter, jobs: list[Re
             progress.update(
                 task,
                 advance=1,
-                description=f"done {finished.count('generated')} · failed {finished.count('failed')} · "
-                f"cost ≈ {format_usd(meter.run_usd)}",
+                description=f"done {finished.count('generated')} · review {finished.count('needs_review')} · "
+                f"failed {finished.count('failed')} · cost ≈ {format_usd(meter.run_usd)}",
             )
 
         async with build_client(cfg) as client:
-            renderer = Renderer(
-                client, store, meter, retry=cfg.settings.retry, concurrency=cfg.settings.render.concurrency,
-                log=log, sleep=_wait, on_done=done,
+            # A soften or redesign reruns stage 3 for one unit, on the run's meter: its calls are budget-checked.
+            runner = StageRunner(
+                client, cfg.settings.llm, cfg.settings.retry, cache_dir=directory / ".cache" / "llm", log=log,
+                meter=meter, sleep=_wait,
             )
-            return await renderer.run(jobs)
+            planning = PlanningContext(ctx.workspace, ctx.settings, ctx.style, ctx.mascot, ctx.rules, ctx.library)
+            renderer = Renderer(
+                client, store, meter, builder, qc=cfg.settings.qc, vision_model=cfg.settings.llm.vision_model,
+                retry=cfg.settings.retry, concurrency=cfg.settings.render.concurrency, log=log,
+                rewriter=PlanRewriter(runner, planning, directory / "plan.yaml"), sleep=_wait, on_done=done,
+            )
+            return await renderer.run(jobs), renderer.softened
 
 
 def _exit_for(result: RunResult, log: RunLog) -> None:
