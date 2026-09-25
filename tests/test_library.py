@@ -99,3 +99,11 @@ def test_unapproved_mascot_and_old_style_sheets_are_skipped(tmp_path):
 def test_references_can_be_switched_off(tmp_path):
     touch(tmp_path / "library" / "style" / "anchor_v1_ref.png")
     assert references(tmp_path, use_references=False) == ReferenceAvailability()
+
+
+def test_an_entry_that_is_not_utf8_names_the_file(tmp_path):
+    directory = add_entry(tmp_path)
+    text = ENTRY.replace("three cavemen", "three cavemen, one café owner")
+    (directory / "character.yaml").write_bytes(text.encode("cp1252"))
+    with pytest.raises(ConfigError, match=r"character\.yaml.*UTF-8"):
+        load_library(tmp_path)

@@ -54,9 +54,19 @@ class VisualRules(_ConfigFile):
     rules: list[str]
 
 
+def read_config_text(path: Path) -> str:
+    """A hand-edited YAML file's text. A file that can't be read is a ConfigError naming it (exit 3)."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(f"{path}: not UTF-8 text ({exc}). Save it as UTF-8.") from exc
+    except OSError as exc:
+        raise ConfigError(f"{path}: can't read it: {exc.strerror or exc}") from exc
+
+
 def _load(model: type[C], workspace: Path, name: str) -> C:
     path = workspace / "config" / name
-    text = path.read_text(encoding="utf-8") if path.exists() else default_config_text(name)
+    text = read_config_text(path) if path.exists() else default_config_text(name)
     try:
         data = YAML(typ="safe").load(text) or {}
     except YAMLError as exc:

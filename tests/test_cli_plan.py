@@ -184,6 +184,18 @@ def test_missing_credentials_exit_3(workspace, monkeypatch, sample_chat):
     assert new(workspace).exit_code == 3
 
 
+def test_a_config_file_that_is_not_utf8_exits_3(workspace, monkeypatch, sample_chat):
+    use_chat(monkeypatch, sample_chat)
+    (workspace / "config").mkdir()
+    rules = 'schema_version: 1\nrules: ["Café signs are blank."]\n'
+    (workspace / "config" / "visual_rules.yaml").write_bytes(rules.encode("cp1252"))
+    result = new(workspace)
+    assert result.exit_code == 3
+    assert isinstance(result.exception, SystemExit)
+    assert "visual_rules.yaml" in result.output
+    assert sample_chat.calls == []
+
+
 def test_replan_updates_one_unit_and_keeps_hand_edits(workspace, monkeypatch, sample_chat, fake_chat):
     path = planned(workspace, monkeypatch, sample_chat)
     text = path.read_text(encoding="utf-8")

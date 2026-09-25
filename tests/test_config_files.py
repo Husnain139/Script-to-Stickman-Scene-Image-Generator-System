@@ -32,3 +32,17 @@ def test_mascot_description_adds_the_optional_outfit(tmp_path):
     assert mascot.description.startswith(mascot.identity + ", usually wearing a small solid-black necktie")
     assert mascot.description.endswith("(these may be hidden or left out when the scene calls for it)")
     assert mascot.model_copy(update={"default_outfit": ""}).description == mascot.identity
+
+
+def test_a_config_file_that_is_not_utf8_names_the_file(tmp_path):
+    (tmp_path / "config").mkdir()
+    rules = 'schema_version: 1\nrules: ["Café signs are blank."]\n'
+    (tmp_path / "config" / "visual_rules.yaml").write_bytes(rules.encode("cp1252"))
+    with pytest.raises(ConfigError, match=r"visual_rules\.yaml.*UTF-8"):
+        load_visual_rules(tmp_path)
+
+
+def test_a_config_file_that_cannot_be_read_names_the_file(tmp_path):
+    (tmp_path / "config" / "style.yaml").mkdir(parents=True)  # a folder where the file should be
+    with pytest.raises(ConfigError, match=r"style\.yaml"):
+        load_style(tmp_path)

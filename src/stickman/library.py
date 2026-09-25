@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from stickman.config_files import MascotConfig
+from stickman.config_files import MascotConfig, read_config_text
 from stickman.plan.models import MASCOT, CastMember, MascotEntry
 from stickman.prompt.builder import ReferenceAvailability
 from stickman.settings import ConfigError
@@ -41,7 +41,7 @@ def load_library(workspace: Path) -> list[LibraryCharacter]:
     entries = []
     for path in sorted(root.glob("*/character.yaml")):
         try:
-            data = YAML(typ="safe").load(path.read_text(encoding="utf-8")) or {}
+            data = YAML(typ="safe").load(read_config_text(path)) or {}
             entry = LibraryCharacter.model_validate(data)
         except (YAMLError, ValidationError) as exc:
             raise ConfigError(f"{path}: {exc}") from exc
