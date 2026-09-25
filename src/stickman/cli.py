@@ -28,7 +28,7 @@ from stickman.plan.planner import (
     replan_unit,
 )
 from stickman.plan.store import PlanChangedError, load_plan, to_document, update_unit, write_plan
-from stickman.project import ProjectError, create_project, project_dir, resolve_project, slugify
+from stickman.project import ProjectError, check_unplanned, choose_project_dir, create_project, resolve_project, slugify
 from stickman.runlog import RunLog
 from stickman.settings import (
     DEFAULT_CONFIG_FILES,
@@ -64,6 +64,11 @@ console = Console()
 @app.callback()
 def main() -> None:
     """Script-to-stickman scene image generator."""
+
+
+def _today() -> date:
+    """The local date that names a new project folder (tests replace it)."""
+    return date.today()
 
 
 def _fail(message: str, code: int) -> NoReturn:
@@ -215,10 +220,16 @@ def new(
     """Create a project from a script and plan it with the LLM (writes plan.yaml)."""
     root = workspace.resolve()
     slug = slugify(name or script.stem)
-    directory = project_dir(root, slug, date.today())
+    directory, continued = choose_project_dir(root, slug, _today(), script)
     console.print(f"Project: {escape(directory.name)}")
+    if continued:
+        console.print(escape(f"Planning continues in {directory.name}: same script, no plan.yaml yet."))
     if aspect not in ASPECTS:
         _fail(f'--aspect must be "16:9" or "9:16", not {aspect!r}', EXIT_USER_ERROR)
+    try:
+        check_unplanned(directory)
+    except ProjectError as exc:
+        _fail(str(exc), EXIT_USER_ERROR)
     cfg, planning = _load_planning(root)
     try:
         text = script.read_text(encoding="utf-8")

@@ -96,6 +96,70 @@ def test_a_daily_limit_pauses_and_the_rerun_continues(workspace, monkeypatch, fa
     assert len(resumed.calls) == 5  # only the describe batches; analyse and cut came from the cache
 
 
+DAY_1, DAY_2 = date(2026, 9, 23), date(2026, 9, 24)
+
+
+def on_day(monkeypatch, day):
+    monkeypatch.setattr(cli, "_today", lambda: day)
+
+
+def daily_limit_at_describe(sample_reply):
+    def limited(model, messages):
+        if messages[0]["content"].startswith("You design one illustration"):
+            raise CFError(ErrorCategory.DAILY_LIMIT, "daily free allocation")
+        return sample_reply(model, messages)
+
+    return limited
+
+
+def test_a_rerun_on_a_later_date_continues_in_the_unfinished_folder(workspace, monkeypatch, fake_chat, sample_reply):
+    on_day(monkeypatch, DAY_1)
+    use_chat(monkeypatch, fake_chat(daily_limit_at_describe(sample_reply)))
+    assert new(workspace).exit_code == 2
+    first = workspace / "projects" / "2026-09-23_first-sleep"
+    assert not (first / "plan.yaml").exists()
+    on_day(monkeypatch, DAY_2)
+    resumed = use_chat(monkeypatch, fake_chat(sample_reply))
+    result = new(workspace)
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[0] == "Project: 2026-09-23_first-sleep"
+    assert lines[1].startswith("Planning continues in 2026-09-23_first-sleep")
+    assert (first / "plan.yaml").is_file()
+    assert not (workspace / "projects" / "2026-09-24_first-sleep").exists()
+    systems = [call["messages"][0]["content"] for call in resumed.calls]
+    assert len(systems) == 5  # the describe batches only: analyse and cut came from the cache
+    assert all(system.startswith("You design one illustration") for system in systems)
+
+
+def test_a_different_script_with_the_same_name_gets_a_new_folder(workspace, monkeypatch, fake_chat, sample_reply):
+    on_day(monkeypatch, DAY_1)
+    use_chat(monkeypatch, fake_chat(daily_limit_at_describe(sample_reply)))
+    assert new(workspace).exit_code == 2
+    script = workspace / "first-sleep.txt"
+    script.write_text(script.read_text(encoding="utf-8").replace("Then we got fire", "Then we found fire"), encoding="utf-8")
+    on_day(monkeypatch, DAY_2)
+    use_chat(monkeypatch, fake_chat(daily_limit_at_describe(sample_reply)))
+    result = new(workspace)
+    assert result.output.splitlines()[0] == "Project: 2026-09-24_first-sleep"
+    assert "Planning continues" not in result.output
+    assert (workspace / "projects" / "2026-09-23_first-sleep" / "script.txt").read_bytes() == SAMPLE.read_bytes()
+
+
+def test_a_planned_folder_is_refused_before_the_script_is_read(workspace, monkeypatch, sample_chat):
+    planned(workspace, monkeypatch, sample_chat)
+
+    def parse_script(text):
+        raise AssertionError("the script was parsed")
+
+    monkeypatch.setattr(cli, "parse_script", parse_script)
+    result = new(workspace)
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert result.output.splitlines()[0] == f"Project: {folder(workspace).name}"
+    assert "already has a plan.yaml" in result.output
+
+
 def test_a_planning_failure_exits_1_and_points_to_the_log(workspace, monkeypatch, fake_chat):
     use_chat(monkeypatch, fake_chat(lambda model, messages: "not json"))
     result = new(workspace)

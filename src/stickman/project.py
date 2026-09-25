@@ -24,12 +24,44 @@ def project_dir(workspace: Path, slug: str, day: date) -> Path:
     return workspace / "projects" / f"{day.isoformat()}_{slug}"
 
 
-def create_project(directory: Path, script: Path) -> None:
-    """Create the folder and copy the script in. A folder whose planning never finished is reused."""
+def choose_project_dir(workspace: Path, slug: str, day: date, script: Path) -> tuple[Path, bool]:
+    """The folder `new` uses, and whether it continues an earlier unfinished one (spec §13).
+
+    Today's folder when it exists. Otherwise the newest `<date>_<slug>` folder that has no
+    plan.yaml and whose script.txt is this same script, so planning that stopped (a daily
+    limit or a failure) continues from its cached stages on a later date. Otherwise today's.
+    """
+    today = project_dir(workspace, slug, day)
+    projects = workspace / "projects"
+    if today.exists() or not projects.is_dir():
+        return today, False
+    try:
+        content = script.read_bytes()
+    except OSError:  # `new` reports the unreadable script itself
+        return today, False
+    dated = re.compile(rf"\d{{4}}-\d{{2}}-\d{{2}}_{re.escape(slug)}")
+    for folder in sorted((d for d in projects.iterdir() if dated.fullmatch(d.name)), key=lambda d: d.name, reverse=True):
+        if (folder / "plan.yaml").exists():
+            continue
+        try:
+            if (folder / "script.txt").read_bytes() == content:
+                return folder, True
+        except OSError:
+            continue
+    return today, False
+
+
+def check_unplanned(directory: Path) -> None:
+    """`new` never replaces a plan.yaml."""
     if (directory / "plan.yaml").exists():
         raise ProjectError(
             f"{directory.name} already has a plan.yaml. Change units with `stickman replan`, or choose another --name."
         )
+
+
+def create_project(directory: Path, script: Path) -> None:
+    """Create the folder and copy the script in. A folder whose planning never finished is reused."""
+    check_unplanned(directory)
     directory.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(script, directory / "script.txt")
 

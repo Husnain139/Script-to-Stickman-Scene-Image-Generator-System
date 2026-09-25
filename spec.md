@@ -974,6 +974,8 @@ Exit codes: `0` success; `1` user or validation error; `2` a pause (budget, dail
 
 **[M2] `new` and `replan`:** `new` refuses to run when the project already has a `plan.yaml`. If planning stopped (daily limit or a failure), running the same `new` command again continues from the cached stages. `replan` uses `-p`, or else the most recently modified project. The strict `-p` rule, `--no-review`, opening the review page, prompt-lock detection (§5.1) and stale marking (§10.4) come in M3–M7.
 
+**[M2] Continuing on a later date:** when today's `<date>_<slug>` folder doesn't exist, `new` continues in the newest `<date>_<slug>` folder that has no `plan.yaml` and holds the same script, and says so after the `Project:` line, so a rerun after the 00:00 UTC reset finds the cached stages even when the local date has changed.
+
 ---
 
 ## 14. Export
