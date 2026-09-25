@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import functools
+import io
 import json
 
 import pytest
+from PIL import Image
 
 from stickman.cf.client import LLMResult
 from stickman.plan.llm import StageRunner
@@ -17,6 +20,19 @@ def _plain_console(monkeypatch):
     """Rich colours CLI output when FORCE_COLOR is set in the user's shell; assertions compare plain text."""
     for name in ("FORCE_COLOR", "TTY_COMPATIBLE", "TTY_INTERACTIVE"):
         monkeypatch.delenv(name, raising=False)
+
+
+@functools.lru_cache
+def jpeg_bytes(width=64, height=36):
+    """A small white JPEG, like the base64 JPEG Klein returns (M0)."""
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), "white").save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+@pytest.fixture
+def jpeg():
+    return jpeg_bytes()
 
 
 class FakeChat:
