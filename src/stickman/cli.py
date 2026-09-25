@@ -3,25 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import shutil
 from collections.abc import Awaitable, Callable
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import NoReturn, TypeVar
 
 import typer
 from rich.console import Console
 from rich.markup import escape
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 from ruamel.yaml.comments import CommentedMap
 
+from stickman.budget import Budget
 from stickman.cf.client import CloudflareClient
 from stickman.cf.errors import CFError, ErrorCategory
 from stickman.ingest.parse import parse_duration, parse_script
 from stickman.ingest.timing import build_timeline
-from stickman.ledger import LEDGER_FILE, Ledger
+from stickman.ledger import LEDGER_FILE, Ledger, utc_day_start
 from stickman.meter import Meter
 from stickman.plan.llm import PlanningError, StageRunner
-from stickman.plan.models import CastMember, PlanValidationError
+from stickman.plan.models import CastMember, Plan, PlanValidationError
 from stickman.plan.planner import (
     REPLAN_KEYS,
     PlanningContext,
@@ -31,8 +34,14 @@ from stickman.plan.planner import (
     replan_unit,
 )
 from stickman.plan.store import PlanChangedError, load_plan, to_document, update_unit, write_plan
-from stickman.pricing import load_pricing
+from stickman.pricing import format_usd, load_pricing, usd_neurons
 from stickman.project import ProjectError, check_unplanned, choose_project_dir, create_project, resolve_project, slugify
+from stickman.render.jobs import JobBuilder, JobError, RenderContext, RenderJob
+from stickman.render.lock import LockHeld, ProjectLock
+from stickman.render.recovery import recover
+from stickman.render.renderer import Renderer, RunResult, StopReason
+from stickman.render.state import StateError, StateStore
+from stickman.render.summary import summary_lines
 from stickman.runlog import RunLog
 from stickman.settings import (
     DEFAULT_CONFIG_FILES,
@@ -309,3 +318,190 @@ def replan(
     update_unit(loaded.doc, unit, fields)
     _write_plan(path, loaded.doc, expected_hash=loaded.hash, again=" plan.yaml was not changed; run the command again.")
     console.print(escape(f"Replanned {unit}: {updated.visual_idea}"))
+
+
+TO_GENERATE = ("planned", "failed")
+OUTAGE_MESSAGE = "Possible outage — run `stickman resume` later."
+EXIT_INTERRUPTED = 130
+
+
+async def _wait(seconds: float) -> None:
+    """How a run waits before a retry (tests replace it)."""
+    await asyncio.sleep(seconds)
+
+
+def _reset_time(now: datetime) -> str:
+    """The next 00:00 UTC, in local time."""
+    return (utc_day_start(now) + timedelta(days=1)).astimezone().strftime("%H:%M") + " local time"
+
+
+@app.command()
+def generate(
+    project: Path | None = typer.Option(None, "--project", "-p", help="Project folder or name. Default: the most recent."),
+    force: bool = typer.Option(False, "--force", help="Go on past the weekly budget."),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="Generate at most this many units in this run."),
+    workspace: Path = typer.Option(Path("."), "--workspace", "-w", help="Workspace folder."),
+) -> None:
+    """Generate an image for every unit that has none yet (spec §10.1). Run it again to continue."""
+    _generate(workspace, project, force=force, limit=limit)
+
+
+@app.command()
+def resume(
+    project: Path | None = typer.Option(None, "--project", "-p", help="Project folder or name. Default: the most recent."),
+    force: bool = typer.Option(False, "--force", help="Go on past the weekly budget."),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="Generate at most this many units in this run."),
+    workspace: Path = typer.Option(Path("."), "--workspace", "-w", help="Workspace folder."),
+) -> None:
+    """The same as generate: continue after a pause (daily limit, budget, outage) or a crash."""
+    _generate(workspace, project, force=force, limit=limit)
+
+
+def _generate(workspace: Path, project: Path | None, *, force: bool, limit: int | None) -> None:
+    root = workspace.resolve()
+    try:
+        directory = resolve_project(root, project)
+    except ProjectError as exc:
+        console.print("Project: (none found)")
+        _fail(str(exc), EXIT_USER_ERROR)
+    console.print(f"Project: {escape(directory.name)}")
+    try:
+        cfg = load_config(root)
+        ctx = RenderContext.load(root, cfg.settings)
+    except ConfigError as exc:
+        _fail(str(exc), EXIT_CONFIG_ERROR)
+    try:
+        plan = load_plan(directory / "plan.yaml", library_ids=ctx.library_ids).plan
+    except PlanValidationError as exc:
+        _fail("plan.yaml is invalid:\n" + "\n".join(exc.errors), EXIT_USER_ERROR)
+    try:
+        builder = JobBuilder(ctx, plan)
+        expected = builder.expected()
+    except ConfigError as exc:
+        _fail(str(exc), EXIT_CONFIG_ERROR)
+    lock = ProjectLock(directory)
+    try:
+        lock.acquire()
+    except LockHeld as exc:
+        _fail(f"{exc}. Let it finish, or stop it, then run this again.", EXIT_USER_ERROR)
+    try:
+        _generate_locked(cfg, ctx, directory, plan, builder, expected, lock, force=force, limit=limit)
+    except KeyboardInterrupt:
+        console.print("Stopped. Finished images are kept; run `stickman resume` to continue.")
+        raise typer.Exit(EXIT_INTERRUPTED) from None
+    finally:
+        lock.release()
+
+
+def _generate_locked(
+    cfg: AppConfig,
+    ctx: RenderContext,
+    directory: Path,
+    plan: Plan,
+    builder: JobBuilder,
+    expected: dict,
+    lock: ProjectLock,
+    *,
+    force: bool,
+    limit: int | None,
+) -> None:
+    if lock.removed_stale is not None:
+        console.print(f"[yellow]Removed a stale lock left by PID {lock.removed_stale}, which is no longer running.[/yellow]")
+    try:
+        store = StateStore.load(directory)
+    except StateError as exc:
+        _fail(f"{exc}. Nothing was changed.", EXIT_USER_ERROR)
+    for note in recover(store, expected):
+        console.print(escape(note))
+    todo = [unit for unit in plan.units() if store.unit(unit.id).status in TO_GENERATE]
+    if limit is not None:
+        todo = todo[:limit]
+    if not todo:
+        console.print("Nothing to generate: every unit has an image, or is stale (never regenerated automatically).")
+        return
+    try:
+        jobs = builder.jobs(todo)
+    except JobError as exc:
+        _fail(str(exc), EXIT_USER_ERROR)
+    token = cfg.secrets.cf_api_token.get_secret_value() if cfg.secrets else ""
+    log = RunLog.for_project(directory, secrets=(token,))
+    ledger = Ledger(cfg.workspace / LEDGER_FILE)
+    now = datetime.now().astimezone()
+    budget = Budget.from_ledger(
+        ledger, cfg.settings.budget, now=now, force=force,
+        warn=lambda message: console.print(f"[yellow]{escape(message)}[/yellow]"),
+    )
+    meter = Meter(project=directory.name, ledger=ledger, budget=budget, pricing=ctx.pricing)
+    _print_run_start(jobs, cfg, ctx, ledger, now)
+    result = asyncio.run(_render(cfg, store, meter, jobs, log))
+    for line in summary_lines(
+        store.state, [unit.id for unit in plan.units()], result=result, run_usd=meter.run_usd,
+        possibly_billed=meter.possibly_billed, week_usd=budget.spent, weekly_usd=cfg.settings.budget.weekly_usd,
+    ):
+        console.print(escape(log.mask(line)))
+    _exit_for(result, log)
+
+
+def _print_run_start(jobs: list[RenderJob], cfg: AppConfig, ctx: RenderContext, ledger: Ledger, now: datetime) -> None:
+    estimate = sum(job.estimate_usd for job in jobs)
+    console.print(escape(
+        f"Generating {len(jobs)} unit(s) on {jobs[0].model} ≈ {format_usd(estimate)} (≈ {usd_neurons(estimate):,.0f} neurons)."
+    ))
+    if cfg.settings.account.plan != "free":
+        return
+    used = ledger.neurons_since(utc_day_start(now))
+    allowance = ctx.pricing.free_daily_neurons
+    per_image = usd_neurons(estimate / len(jobs))
+    fit = max(0, math.floor((allowance - used) / per_image)) if per_image > 0 else len(jobs)
+    line = (
+        f"Free plan: about {used:,.0f} of {allowance:,.0f} neurons used today (UTC), "
+        f"so about {fit} more image(s) fit before the reset at {_reset_time(now)}."
+    )
+    if fit < len(jobs):
+        line += " The run pauses at the daily limit; `stickman resume` continues after the reset."
+    console.print(escape(line))
+
+
+async def _render(cfg: AppConfig, store: StateStore, meter: Meter, jobs: list[RenderJob], log: RunLog) -> RunResult:
+    columns = (TextColumn("{task.description}"), BarColumn(), MofNCompleteColumn(), TimeElapsedColumn())
+    with Progress(*columns, console=console, transient=True) as progress:
+        task = progress.add_task("Generating", total=len(jobs))
+
+        def done(unit_id: str) -> None:
+            finished = [store.unit(job.unit_id).status for job in jobs]
+            progress.update(
+                task,
+                advance=1,
+                description=f"done {finished.count('generated')} · failed {finished.count('failed')} · "
+                f"cost ≈ {format_usd(meter.run_usd)}",
+            )
+
+        async with build_client(cfg) as client:
+            renderer = Renderer(
+                client, store, meter, retry=cfg.settings.retry, concurrency=cfg.settings.render.concurrency,
+                log=log, sleep=_wait, on_done=done,
+            )
+            return await renderer.run(jobs)
+
+
+def _exit_for(result: RunResult, log: RunLog) -> None:
+    """spec §9.5, §9.7: pauses exit 2 with how to continue; a rejected token exits 3."""
+    if result.stop is None:
+        return
+    if result.stop is StopReason.DAILY_LIMIT:
+        _fail(
+            "The free daily allocation of 10,000 neurons is used up. Finished images are kept; "
+            f"run `stickman resume` after the daily reset (00:00 UTC, {_reset_time(datetime.now().astimezone())}).",
+            EXIT_PAUSED,
+        )
+    if result.stop is StopReason.BUDGET:
+        _fail(
+            log.mask(
+                f"Weekly budget reached: {result.detail}. Nothing new was started. Run `stickman resume --force` "
+                "to go on anyway, or raise budget.weekly_usd in config/settings.yaml."
+            ),
+            EXIT_PAUSED,
+        )
+    if result.stop is StopReason.CIRCUIT_BREAKER:
+        _fail(OUTAGE_MESSAGE, EXIT_PAUSED)
+    _fail(TOKEN_HELP, EXIT_CONFIG_ERROR)

@@ -818,6 +818,12 @@ free_daily_usd: 0.11      # 10,000 neurons × $0.011/1k
 - skips the test pause
 - still runs QC, and still leaves the final gallery review to you
 
+**[M3] Until M6/M7:** there's no review page (M6) and no test-first flow (M7) yet, so `generate` has no approval steps.
+- It generates every `planned` or `failed` unit in time order.
+- `--limit N` generates at most N of them in one run.
+- On the free plan it first prints how many images fit in today's allocation.
+- A run that reaches the daily limit pauses with exit code 2. `resume` continues after 00:00 UTC.
+
 ### 10.2 Picking the test units
 Run over units in time order:
 1. **Mascot unit:** the first unit whose `characters` include `mascot`.
@@ -999,6 +1005,12 @@ Exit codes: `0` success; `1` user or validation error; `2` a pause (budget, dail
 **[M2] `new` and `replan`:** `new` refuses to run when the project already has a `plan.yaml`. If planning stopped (daily limit or a failure), running the same `new` command again continues from the cached stages. `replan` uses `-p`, or else the most recently modified project. The strict `-p` rule, `--no-review`, opening the review page, prompt-lock detection (§5.1) and stale marking (§10.4) come in M3–M7.
 
 **[M2] Continuing on a later date:** when today's `<date>_<slug>` folder doesn't exist, `new` continues in the newest `<date>_<slug>` folder that has no `plan.yaml` and holds the same script, and says so after the `Project:` line, so a rerun after the 00:00 UTC reset finds the cached stages even when the local date has changed.
+
+**[M3] `generate` and `resume`:**
+- They take `-p`, or else use the most recently modified planned project. The strict `-p` rule comes in M7.
+- Their other options are `--force` (go past the weekly budget) and `--limit N`.
+- Both hold the project's `.lock` while they run.
+- Ctrl+C exits with code 130; finished images are kept.
 
 ---
 
