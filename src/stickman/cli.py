@@ -186,7 +186,7 @@ def _run_llm(
 ) -> T:
     """Run LLM work for a project and turn its failures into CLI messages and exit codes."""
     log = RunLog.for_project(directory, secrets=_secrets(cfg))
-    again =" Finished stages are cached, so running the same command again continues from there." if cached else ""
+    again = " Finished stages are cached, so running the same command again continues from there." if cached else ""
     try:
         pricing = load_pricing(cfg.workspace)
     except ConfigError as exc:
@@ -448,7 +448,7 @@ def _generate_locked(
     except JobError as exc:
         _fail(str(exc), EXIT_USER_ERROR)
     log = RunLog.for_project(directory, secrets=_secrets(cfg))
-    ledger =Ledger(cfg.workspace / LEDGER_FILE)
+    ledger = Ledger(cfg.workspace / LEDGER_FILE)
     now = datetime.now().astimezone()
     budget = Budget.from_ledger(
         ledger, cfg.settings.budget, now=now, force=force,
