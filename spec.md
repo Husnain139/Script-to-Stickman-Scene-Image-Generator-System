@@ -721,6 +721,7 @@ fields: prompt, width, height, seed, [steps — dev only], [guidance — optiona
 - **Response:** JSON containing a base64 image. **[M0]** Settled: it sits at `result.image`, and the format is JPEG. See `docs/m0-findings.md`.
 - **Saving:** detect the format from the magic bytes and always save as PNG. Write to a temp file, then `os.replace`.
 - **Seeds:** when `seed` is null, the seed is a random 32-bit integer, stored with the version. **[M0]** The same seed does **not** reproduce identical pixels on Klein 4B. The seed is kept as a record of how an image was made, not as a way to recreate it. Nothing may rely on regenerating an identical image from a stored seed. See `docs/m0-findings.md`.
+- **[M3]** A null seed is drawn from 0 … 2³¹−1, valid whether the API reads it as signed or unsigned 32-bit.
 
 ### 9.3 LLM
 ```
