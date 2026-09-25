@@ -50,3 +50,42 @@ def test_one_klein_4b_image():
     assert decode_image(result.image_bytes).size == SIZE
     assert result.neurons is not None and 150 < result.neurons < 260
     assert result.request_id
+
+
+def test_one_vision_check():
+    """About 100-250 neurons: the vision check on a committed real Klein image (tests/fixtures/qc).
+    Like every billable call it goes through the meter, so it adds an entry to ledger.jsonl."""
+    from PIL import Image
+
+    from stickman.plan.llm import finish_reason
+    from stickman.qc.vision import VISION_MAX_TOKENS, ExpectedPicture, parse_vision, vision_messages, vision_png, vision_prompt
+
+    cfg = load_config(ROOT)
+    pricing = load_pricing(ROOT)
+    meter = Meter(project="live-smoke", ledger=Ledger(ROOT / LEDGER_FILE), pricing=pricing)
+    model = cfg.settings.llm.vision_model
+    image = Image.open(ROOT / "tests" / "fixtures" / "qc" / "klein4b_clock.png")
+    prompt = vision_prompt(ExpectedPicture("A stickman looks at a clock in the middle of the night", 1, "Everyman: 1"),
+                           reference=False)
+
+    async def go():
+        async with CloudflareClient(
+            cfg.secrets.cf_account_id,
+            cfg.secrets.cf_api_token.get_secret_value(),
+            plan=cfg.settings.account.plan,
+            timeout_s=cfg.settings.render.timeout_s,
+        ) as client:
+            return await meter.run(
+                lambda: client.chat(model, vision_messages(prompt, vision_png(image)), temperature=0.0,
+                                    max_tokens=VISION_MAX_TOKENS),
+                kind="vision",
+                model=model,
+                estimate_usd=pricing.llm_estimate(model, len(prompt) + 3200, VISION_MAX_TOKENS),
+                cost_of=lambda reply: pricing.llm_cost(model, reply.input_tokens, reply.output_tokens),
+            )
+
+    reply = asyncio.run(go()).result
+    report, errors = parse_vision(reply.text, finish_reason=finish_reason(reply))
+    print(f"neurons={reply.neurons} in={reply.input_tokens} out={reply.output_tokens} report={report} errors={errors}")
+    assert report is not None, errors
+    assert reply.neurons is not None and reply.neurons < 400
