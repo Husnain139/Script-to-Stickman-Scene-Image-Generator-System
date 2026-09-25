@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from stickman.ingest.models import TimedLine
 from stickman.library import LibraryCharacter
+from stickman.plan.corrections import place_corrections
 from stickman.plan.llm import StageRequest, StageRunner
 from stickman.plan.models import MASCOT, is_cast_id
 from stickman.plan.prompts import analyse_system
@@ -81,18 +82,7 @@ def check_analyse(
         build_scenes(lines, result.groups, max_lines=max_lines)
     except GroupingError as exc:
         return [f"groups: {exc}"]  # corrections refer to groups, so check them once groups are valid
-    errors = []
-    texts = group_texts(lines, result.groups)
-    group_of = {number: index for index, group in enumerate(result.groups) for number in group}
-    for index, correction in enumerate(result.corrections):
-        position = group_of.get(correction.line)
-        if position is None:
-            errors.append(f"corrections[{index}].line: {correction.line} is not a line number")
-        elif correction.from_ not in texts[position]:
-            errors.append(
-                f'corrections[{index}].from: "{correction.from_}" does not occur in the text of the group '
-                f'holding line {correction.line}: "{texts[position]}"'
-            )
+    _, errors = place_corrections(result.groups, group_texts(lines, result.groups), result.corrections)
     ids = [member.id for member in result.cast]
     duplicates = sorted({i for i in ids if ids.count(i) > 1})
     if duplicates:

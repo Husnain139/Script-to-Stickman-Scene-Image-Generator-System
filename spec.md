@@ -461,6 +461,7 @@ human experience. Historical, scientific or third-person scenes use cast charact
 **Stage checks:**
 - The groups are valid (§4.4).
 - Each correction's `line` exists, and its `from` text occurs in the merged text of the group holding that line (lines joined with one space).
+- **[M2]** `from` must appear exactly once as whole words in its group (a word edge is needed only where `from` starts or ends with a letter or digit), and two corrections in one group must not overlap, so every correction has exactly one place.
 - Cast IDs are unique and don't equal `mascot`.
 - Each `library_ref` exists.
 

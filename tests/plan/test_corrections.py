@@ -1,6 +1,8 @@
+import pytest
+
 from stickman.ingest.models import TimedLine
-from stickman.plan.analyse import LineCorrection, group_texts
-from stickman.plan.corrections import apply_corrections, correct_scenes, merge_check
+from stickman.plan.analyse import AnalyseResult, LineCorrection, check_analyse, group_texts
+from stickman.plan.corrections import correct_scenes, find_whole_words, merge_check
 from stickman.plan.models import MergeCheck
 from stickman.split.scenes import build_scenes, merge_short_scenes
 
@@ -18,8 +20,29 @@ FIXES = [
 ]
 
 
-def test_apply_corrections_replaces_the_first_occurrence_in_order():
-    assert apply_corrections("a b a b", [("a", "x"), ("b", "y"), ("a", "z")]) == "x y z b"
+def test_whole_words_are_found_on_word_edges_only():
+    text = "In 1992, researchers named it first sleep, 2 sleep."
+    assert find_whole_words(text, "2") == [(43, 44)]
+    assert find_whole_words(text, "99") == []
+    assert find_whole_words(text, ", 2") == [(41, 44)]  # no edge rule next to punctuation
+    assert find_whole_words("a a a", "a a") == [(0, 3), (2, 5)]  # overlapping occurrences count
+
+
+def test_a_short_from_is_replaced_where_it_is_a_whole_word():
+    lines = [TimedLine(1, 0.0, 3.0, "In 1992, researchers named it"), TimedLine(2, 3.0, 6.0, "first sleep, 2 sleep.")]
+    groups = [[1, 2]]
+    fix = LineCorrection(line=2, from_="2", to="second", reason="term")
+    analysed = AnalyseResult(groups=groups, corrections=[fix], cast=[])
+    assert check_analyse(analysed, lines, max_lines=3, library_ids=set()) == []
+    corrected, _ = correct_scenes(build_scenes(lines, groups, max_lines=3), groups, group_texts(lines, groups), [fix])
+    assert corrected == {1: "In 1992, researchers named it first sleep, second sleep."}
+
+
+def test_correct_scenes_refuses_corrections_that_were_not_checked():
+    scenes = build_scenes(LINES, GROUPS, max_lines=3)
+    unchecked = [LineCorrection(line=4, from_="sleep", to="rest", reason="twice in its group")]
+    with pytest.raises(ValueError, match="exactly once"):
+        correct_scenes(scenes, GROUPS, group_texts(LINES, GROUPS), unchecked)
 
 
 def test_corrections_apply_at_scene_level_across_a_line_break():

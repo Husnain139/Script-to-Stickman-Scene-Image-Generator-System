@@ -89,6 +89,46 @@ def test_a_correction_may_name_any_line_of_its_group():
     assert check_analyse(result(corrections=[later_line]), LINES, max_lines=3, library_ids=set()) == []
 
 
+FIRST_SLEEP = [
+    TimedLine(1, 0.0, 3.0, "In 1992, researchers named it"),
+    TimedLine(2, 3.0, 6.0, "first sleep, 2 sleep."),
+]
+
+
+def check_fix(fix, lines=FIRST_SLEEP, groups=((1, 2),)):
+    analysed = AnalyseResult.model_validate({"groups": [list(g) for g in groups], "corrections": [fix], "cast": []})
+    return check_analyse(analysed, lines, max_lines=3, library_ids=set())
+
+
+def test_a_short_from_that_is_one_whole_word_in_its_group_passes():
+    assert check_fix({"line": 2, "from": "2", "to": "second"}) == []
+
+
+def test_a_from_that_occurs_twice_as_whole_words_fails():
+    [error] = check_fix({"line": 2, "from": "sleep", "to": "rest"})
+    assert error.startswith('corrections[0].from: "sleep" must appear exactly once as whole words in its group')
+    assert "quote enough surrounding words to make it unique" in error
+
+
+def test_a_from_found_only_inside_a_longer_word_fails():
+    [error] = check_fix({"line": 1, "from": "99", "to": "98"})
+    assert error.startswith('corrections[0].from: "99" does not occur as whole words')
+
+
+@pytest.mark.parametrize("phrase", [", 2", "2 sleep.", "sleep, 2", "it first"])
+def test_a_from_with_punctuation_at_either_edge_still_matches(phrase):
+    assert check_fix({"line": 1 if phrase == "it first" else 2, "from": phrase, "to": "x"}) == []
+
+
+def test_two_corrections_may_not_overlap_in_one_group():
+    analysed = result(corrections=[
+        {"line": 2, "from": "Roger E.", "to": "Roger", "reason": "r"},
+        {"line": 2, "from": "E. Kirch", "to": "Ekirch", "reason": "r"},
+    ])
+    [error] = check_analyse(analysed, LINES, max_lines=3, library_ids=set())
+    assert error.startswith('corrections[1].from: "E. Kirch" overlaps corrections[0].from ("Roger E.")')
+
+
 def test_the_prompt_asks_for_line_numbers():
     from stickman.plan.prompts import analyse_system
 
