@@ -388,6 +388,11 @@ An entry whose `style_version` is not the current `style.yaml` version is flagge
 ```
 - `kind` is one of `image`, `sheet`, `anchor`, `llm`, `vision`.
 - `billing` is one of `billed`, `possibly_billed` (timeouts), `not_billed` (errors raised before the request was sent).
+- **[M3]** Each entry also has `neurons`: the `cf-ai-neurons` header of a successful call, or null.
+  - A `billed` entry's `est_usd` is that header's cost (§9.7), or the §9.6 estimate when the header is missing.
+  - A timeout is `possibly_billed`, at its estimate.
+  - Any other error response is `not_billed`.
+  - When reading, a torn last line is skipped, and the next entry is still written on a line of its own.
 
 ### 5.5 Manifests
 - `manifest.json` is an array of units: every plan field, plus the state status, approved version file, seed, model, QC result, `softened` and all corrections.
