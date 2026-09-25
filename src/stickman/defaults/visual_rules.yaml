@@ -10,3 +10,26 @@ rules:
   - "Maps and signs: simple shapes; no names or writing."
   - "Thoughts and dreams: a cloud bubble containing a small picture, never words."
   - "Sensitive content: tasteful and symbolic, never graphic."
+
+# Text-free wording a "text" QC retry adds to matching props (spec §7.5). Keys match whole words
+# (plurals too) in each prop.
+text_free:
+  clock: "a round face with two hands and no numerals"
+  watch: "a round face with two hands and no numerals"
+  calendar: "a grid of empty squares"
+  book: "blank pages or a few wavy lines"
+  notebook: "blank pages or a few wavy lines"
+  paper: "blank, or a few wavy lines"
+  newspaper: "columns of wavy lines, no letters"
+  letter: "a blank folded sheet"
+  sign: "a blank board with simple shapes, no writing"
+  poster: "simple shapes only, no writing"
+  map: "simple shapes, no names"
+  screen: "blank, or simple shapes"
+  computer: "a blank screen, or simple shapes"
+  laptop: "a blank screen, or simple shapes"
+  phone: "a blank screen"
+  chart: "bars or an arrow line without labels"
+  graph: "bars or an arrow line without labels"
+  money: "coins or bills without numbers or symbols"
+  coin: "plain, without numbers or symbols"

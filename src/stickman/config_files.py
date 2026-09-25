@@ -50,8 +50,34 @@ class MascotConfig(_ConfigFile):
         )
 
 
+# Text-free wording for props that tend to come out with text (spec §7.5 `text`). A text retry adds
+# it to the matching prop. Older visual_rules.yaml files without `text_free` get this table.
+TEXT_FREE: dict[str, str] = {
+    "clock": "a round face with two hands and no numerals",
+    "watch": "a round face with two hands and no numerals",
+    "calendar": "a grid of empty squares",
+    "book": "blank pages or a few wavy lines",
+    "notebook": "blank pages or a few wavy lines",
+    "paper": "blank, or a few wavy lines",
+    "newspaper": "columns of wavy lines, no letters",
+    "letter": "a blank folded sheet",
+    "sign": "a blank board with simple shapes, no writing",
+    "poster": "simple shapes only, no writing",
+    "map": "simple shapes, no names",
+    "screen": "blank, or simple shapes",
+    "computer": "a blank screen, or simple shapes",
+    "laptop": "a blank screen, or simple shapes",
+    "phone": "a blank screen",
+    "chart": "bars or an arrow line without labels",
+    "graph": "bars or an arrow line without labels",
+    "money": "coins or bills without numbers or symbols",
+    "coin": "plain, without numbers or symbols",
+}
+
+
 class VisualRules(_ConfigFile):
     rules: list[str]
+    text_free: dict[str, str] = Field(default_factory=lambda: dict(TEXT_FREE))
 
 
 def load_config_file(model: type[C], workspace: Path, name: str) -> C:
