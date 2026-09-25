@@ -12,6 +12,7 @@ from typing import NoReturn, TypeVar
 import typer
 from rich.console import Console
 from rich.markup import escape
+from ruamel.yaml.comments import CommentedMap
 
 from stickman.cf.client import CloudflareClient
 from stickman.cf.errors import CFError, ErrorCategory
@@ -189,6 +190,18 @@ def _load_planning(root: Path) -> tuple[AppConfig, PlanningContext]:
         _fail(str(exc), EXIT_CONFIG_ERROR)
 
 
+def _write_plan(path: Path, doc: CommentedMap, *, expected_hash: str | None, again: str) -> None:
+    """The final plan.yaml write. Its failures become a message and exit 1, not a traceback."""
+    try:
+        write_plan(path, doc, expected_hash=expected_hash)
+    except PlanChangedError:
+        _fail(f"{path.name} changed on disk while the LLM was working. Nothing was written; run the command again.", EXIT_USER_ERROR)
+    except PlanValidationError as exc:
+        _fail(f"{path.name} was not written: the result failed validation (a bug): " + "; ".join(exc.errors[:5]), EXIT_USER_ERROR)
+    except OSError as exc:
+        _fail(f"Can't write {path}: {exc}.{again}", EXIT_USER_ERROR)
+
+
 def _print_summary(outcome: PlanOutcome, directory: Path) -> None:
     plan = outcome.plan
     split = sum(1 for scene in plan.scenes if scene.split.status == "split")
@@ -249,7 +262,10 @@ def new(
         lambda runner: plan_script(runner, planning, script_text=text, project=slug, aspect=aspect, duration=seconds),
         cached=True,
     )
-    write_plan(directory / "plan.yaml", to_document(outcome.plan), expected_hash=None)
+    _write_plan(
+        directory / "plan.yaml", to_document(outcome.plan), expected_hash=None,
+        again=" Finished stages are cached, so running the same command again continues from there.",
+    )
     _print_summary(outcome, directory)
 
 
@@ -281,8 +297,5 @@ def replan(
     )
     fields = {key: value for key, value in updated.model_dump(mode="json").items() if key in REPLAN_KEYS}
     update_unit(loaded.doc, unit, fields)
-    try:
-        write_plan(path, loaded.doc, expected_hash=loaded.hash)
-    except PlanChangedError:
-        _fail("plan.yaml changed on disk while the LLM was working. Nothing was written; run the command again.", EXIT_USER_ERROR)
+    _write_plan(path, loaded.doc, expected_hash=loaded.hash, again=" plan.yaml was not changed; run the command again.")
     console.print(escape(f"Replanned {unit}: {updated.visual_idea}"))

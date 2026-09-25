@@ -8,7 +8,8 @@ from typer.testing import CliRunner
 
 from stickman import cli
 from stickman.cf.errors import CFError, ErrorCategory
-from stickman.plan.store import load_plan, update_unit, write_plan
+from stickman.plan.models import PlanValidationError
+from stickman.plan.store import PlanChangedError, load_plan, update_unit, write_plan
 
 runner = CliRunner()
 SAMPLE = Path(__file__).parent / "fixtures" / "scripts" / "first-sleep.txt"
@@ -238,6 +239,42 @@ def test_replan_refuses_when_the_plan_changed_meanwhile(workspace, monkeypatch, 
     assert result.exit_code == 1
     assert "changed on disk" in result.output
     assert path.read_text(encoding="utf-8").endswith("# edited meanwhile\n")
+
+
+WRITE_ERRORS = [
+    (PlanValidationError(["scenes[0].end: 1.0 must be after start 2.0"]), "plan.yaml was not written: the result failed validation"),
+    (PermissionError(13, "Permission denied"), "Can't write "),
+]
+
+
+def failing_write(monkeypatch, error):
+    def write_plan(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(cli, "write_plan", write_plan)
+
+
+@pytest.mark.parametrize("error, message", WRITE_ERRORS)
+def test_new_reports_a_failed_plan_write(workspace, monkeypatch, sample_chat, error, message):
+    use_chat(monkeypatch, sample_chat)
+    failing_write(monkeypatch, error)
+    result = new(workspace)
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)  # a message, not a traceback
+    assert message in result.output and "plan.yaml" in result.output
+
+
+@pytest.mark.parametrize(
+    "error, message", [*WRITE_ERRORS, (PlanChangedError("plan.yaml changed"), "plan.yaml changed on disk")]
+)
+def test_replan_reports_a_failed_plan_write(workspace, monkeypatch, sample_chat, fake_chat, error, message):
+    planned(workspace, monkeypatch, sample_chat)
+    use_chat(monkeypatch, fake_chat([json.dumps({"units": [REPLANNED]})]))
+    failing_write(monkeypatch, error)
+    result = replan(workspace, "006a")
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert message in result.output and "plan.yaml" in result.output
 
 
 def test_replan_needs_a_project_and_a_known_unit(workspace, monkeypatch, sample_chat):
