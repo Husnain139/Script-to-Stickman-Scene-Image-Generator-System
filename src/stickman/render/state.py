@@ -196,6 +196,20 @@ class StateStore:
         unit.approved_version = None
         self.save()
 
+    def end_regeneration(
+        self, unit_id: str, *, current: int | None, approved: int | None, status: UnitStatus
+    ) -> None:
+        """A regeneration that made no image: the unit is as it was before begin_regeneration, its approval
+        back and nothing to compare. A failed unit keeps the new error."""
+        unit = self.unit(unit_id)
+        unit.current_version = current
+        unit.approved_version = approved
+        unit.status = status
+        unit.compare_with = None
+        if status != "failed":
+            unit.error = None
+        self.save()
+
     def next_version(self, unit_id: str) -> int:
         """One above every version in state.json and every file in images/_history, so an image
         that a killed run left behind is never overwritten."""

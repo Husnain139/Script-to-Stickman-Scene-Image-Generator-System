@@ -240,3 +240,32 @@ def test_stopping_the_server_during_a_job_says_what_it_waits_for(tmp_path, plan_
     err = capsys.readouterr().err
     assert "Waiting for the page's regeneration of 001 to finish (Ctrl+C again to abandon it)" in err
     assert StateStore.load(project).unit("001").versions  # the job finished before the server stopped
+
+
+def test_an_unreadable_state_json_gives_409_with_a_masked_message(site):
+    (site.project / "state.json").write_text('{"schema_version": 1, "units": "tok-secret"}', encoding="utf-8")
+    for url in ("/api/plan/approve", "/api/tests/approve"):
+        response = site.post(url, headers=WRITE)
+        assert response.status_code == 409, url
+        assert "state.json" in response.json()["error"] and "tok-secret" not in response.text
+
+
+def test_a_request_the_server_cant_read_gives_its_first_error_readably(site):
+    response = site.put("/api/units/002a/prompt", headers=WRITE, json={"prompt": "x", "plan_hash": None})
+    assert (response.status_code, response.json()) == (422, {"error": "plan_hash: Input should be a valid string"})
+
+
+def test_a_replan_hint_is_at_most_500_characters(site):
+    response = site.post("/api/units/001/replan", headers=WRITE, json={"hint": "x" * 501})
+    assert response.status_code == 422 and response.json()["error"].startswith("hint: ")
+    assert site.get("/api/project").json()["job"] is None
+
+
+def test_approving_a_unit_shown_as_stale_is_refused(site):
+    store = StateStore.load(site.project)
+    store.unit("001").versions[0].fingerprint = "sha256:an-older-plan"
+    store.save()
+    assert next(u for u in site.get("/api/project").json()["units"] if u["id"] == "001")["status"] == "stale"
+    response = site.post("/api/units/001/approve", headers=WRITE)
+    assert response.status_code == 409 and "regenerate it first" in response.json()["error"]
+    assert state(site).units["001"].status == "generated"

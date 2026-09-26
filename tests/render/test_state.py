@@ -199,3 +199,17 @@ def test_the_current_copy_is_the_current_versions_file_and_goes_when_there_is_no
     assert copy.read_bytes() == b"one"
     assert write_current_copy(tmp_path, "001_00-00.0", None)
     assert not copy.exists()
+
+
+def test_a_regeneration_that_made_nothing_puts_the_unit_back_as_it_was(tmp_path):
+    store = StateStore.load(tmp_path)
+    store.add_version("001", version(1, "001"), status="generated")
+    store.approve("001")
+    store.begin_regeneration("001")
+    store.set_status("001", "planned")  # a budget stop before the first image
+    store.end_regeneration("001", current=1, approved=1, status="approved")
+    unit = StateStore.load(tmp_path).unit("001")
+    assert (unit.status, unit.approved_version, unit.current_version, unit.compare_with) == ("approved", 1, 1, None)
+    store.set_status("001", "failed", error="bad_request: again")  # a failed unit regenerated, failing again
+    store.end_regeneration("001", current=1, approved=None, status="failed")
+    assert StateStore.load(tmp_path).unit("001").error == "bad_request: again"

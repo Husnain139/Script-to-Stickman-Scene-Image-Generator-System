@@ -32,6 +32,7 @@ from stickman.render.recovery import recover
 from stickman.render.references import ReferenceFiles
 from stickman.render.renderer import GuardedChat, Renderer, RunControl
 from stickman.render.rewrite import PlanRewriter
+from stickman.render.state import write_current_copy
 from stickman.render.summary import PAUSE_NAMES
 from stickman.review.access import Busy, JobInfo, ProjectAccess
 from stickman.review.events import EventHub
@@ -150,27 +151,47 @@ class Jobs:
         except (ConfigError, JobError) as exc:
             return f"Can't regenerate {unit_id}: {exc}", "failed"
         recover(store, expected)
+        before = store.unit(unit_id)
+        current, approved, status = before.current_version, before.approved_version, before.status
+        had = {version.v for version in before.versions}
         store.begin_regeneration(unit_id)
         meter = self._meter(ctx.pricing, budget=True, project=self._project.name)
         log = RunLog.for_project(self._project, secrets=self._secrets)
-        async with client:
-            control = RunControl(settings.retry.circuit_breaker)
-            runner = StageRunner(
-                GuardedChat(client, control), settings.llm, settings.retry, cache_dir=self._project / ".cache" / "llm",
-                log=log, meter=meter, sleep=self._sleep,
-            )
-            planning = PlanningContext(ctx.workspace, ctx.settings, ctx.style, ctx.mascot, ctx.rules, ctx.library)
-            renderer = Renderer(
-                client, store, meter, builder, qc=settings.qc, vision_model=settings.llm.vision_model,
-                retry=settings.retry, concurrency=1, log=log, rewriter=PlanRewriter(runner, planning, self._plan_path),
-                sleep=self._sleep, control=control,
-            )
-            result = await renderer.run([job], fresh={unit_id})
-        if result.stop is not None:
-            detail = f": {result.detail}" if result.detail else ""
-            return f"Stopped ({PAUSE_NAMES[result.stop]}){detail}. Finished images are kept.", "paused"
-        unit = store.unit(unit_id)
-        return f"{unit_id} is {unit.status.replace('_', ' ')}" + (f": {unit.error}" if unit.error else "."), "finished"
+        info = self._access.job
+        try:
+            async with client:
+                control = RunControl(settings.retry.circuit_breaker)
+                runner = StageRunner(
+                    GuardedChat(client, control), settings.llm, settings.retry,
+                    cache_dir=self._project / ".cache" / "llm", log=log, meter=meter, sleep=self._sleep,
+                )
+                planning = PlanningContext(ctx.workspace, ctx.settings, ctx.style, ctx.mascot, ctx.rules, ctx.library)
+                renderer = Renderer(
+                    client, store, meter, builder, qc=settings.qc, vision_model=settings.llm.vision_model,
+                    retry=settings.retry, concurrency=1, log=log,
+                    rewriter=PlanRewriter(runner, planning, self._plan_path), sleep=self._sleep, control=control,
+                    on_done=lambda done: self._publish(info, "progress") if info else None,
+                )
+                result = await renderer.run([job], fresh={unit_id})
+            if result.stop is not None:
+                detail = f": {result.detail}" if result.detail else ""
+                message, state = f"Stopped ({PAUSE_NAMES[result.stop]}){detail}. Finished images are kept.", "paused"
+            else:
+                unit = store.unit(unit_id)
+                message = f"{unit_id} is {unit.status.replace('_', ' ')}" + (f": {unit.error}" if unit.error else ".")
+                state = "finished"
+        finally:
+            # No new image: the approved image is still the one shown, so the approval comes back (and the
+            # status it had), with nothing to compare. The message above still says what went wrong.
+            nothing_new = not ({version.v for version in store.unit(unit_id).versions} - had)
+            if nothing_new:
+                store.end_regeneration(unit_id, current=current, approved=approved, status=status)
+                version = store.unit(unit_id).version(current) if current is not None else None
+                write_current_copy(self._project, job.stem, version.file if version is not None else None)
+        if nothing_new:
+            keeps = "its previous image and approval" if approved is not None else "its previous image"
+            message += f" No new image was made, so {unit_id} keeps {keeps}."
+        return message, state
 
     async def _replan(self, unit_id: str, hint: str) -> Outcome:
         """Stage 3 again for one unit with the hint (spec §6.5), written to plan.yaml hash-checked. Planning is

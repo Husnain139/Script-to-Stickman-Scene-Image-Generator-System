@@ -162,3 +162,13 @@ def test_selecting_a_version_makes_it_the_current_copy_in_images(tmp_path):
     copy.write_bytes(b"version 2")
     select_version(store, "001", 1, unit_ids=IDS, stem="001_00-00.0")
     assert copy.read_bytes() == b"version 1"
+
+
+def test_approving_a_stale_unit_is_refused(tmp_path):
+    store = StateStore.load(tmp_path)
+    store.add_version("001", version("001"), status="generated")
+    with pytest.raises(ActionError) as error:
+        approve_unit(store, "001", unit_ids=IDS, status="stale")
+    assert status_of(error) == 409
+    assert error.value.message == "001 is stale: its plan fields changed after the image was made; regenerate it first"
+    assert store.unit("001").status == "generated"

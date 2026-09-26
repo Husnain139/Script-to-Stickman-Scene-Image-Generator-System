@@ -35,10 +35,18 @@ def _unit(unit_id: str, unit_ids: Collection[str], busy: str | None) -> None:
         raise ActionError(409, f"{unit_id} is being regenerated; wait for it to finish.")
 
 
-def approve_unit(store: StateStore, unit_id: str, *, unit_ids: Collection[str], busy: str | None = None) -> None:
+def approve_unit(
+    store: StateStore, unit_id: str, *, unit_ids: Collection[str], status: str | None = None, busy: str | None = None
+) -> None:
+    """`status`: the one the page shows (stale is worked out for display, not stored), so a stale unit is refused:
+    approving it would change nothing on the page, which compares the approved image with the plan."""
     _unit(unit_id, unit_ids, busy)
     if store.unit(unit_id).current_version is None:
         raise ActionError(409, f"{unit_id} has no image to approve.")
+    if status == "stale":
+        raise ActionError(
+            409, f"{unit_id} is stale: its plan fields changed after the image was made; regenerate it first"
+        )
     store.approve(unit_id)
 
 

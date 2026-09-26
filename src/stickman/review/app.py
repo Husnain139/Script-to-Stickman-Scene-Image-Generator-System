@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -76,7 +77,7 @@ class PromptBody(_Body):
 
 
 class HintBody(_Body):
-    hint: str = ""
+    hint: str = Field(default="", max_length=500)
 
 
 class PlanSource:
@@ -201,6 +202,19 @@ def create_app(
     async def busy(request: Request, exc: Busy) -> JSONResponse:
         return JSONResponse({"error": masked(str(exc))}, status_code=409)
 
+    @app.exception_handler(StateError)
+    async def state_error(request: Request, exc: StateError) -> JSONResponse:
+        return JSONResponse({"error": masked(f"state.json can't be read: {exc}")}, status_code=409)
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request: Request, exc: RequestValidationError) -> JSONResponse:
+        """{"error": ...} like every other refusal (FastAPI's own shape is {"detail": [...]}): the first problem."""
+        errors = exc.errors()
+        first = errors[0] if errors else {}
+        where = ".".join(str(part) for part in first.get("loc", ()) if part not in ("body", "path", "query"))
+        problem = str(first.get("msg", "the request can't be read"))
+        return JSONResponse({"error": masked(f"{where}: {problem}" if where else problem)}, status_code=422)
+
     def view() -> dict[str, Any]:
         try:
             ctx = RenderContext.load(workspace, settings)
@@ -281,9 +295,9 @@ def create_app(
 
     @app.post("/api/units/{unit_id}/approve")
     async def unit_approve(unit_id: str) -> dict[str, Any]:
-        ids = unit_ids()
+        statuses = {unit["id"]: unit["status"] for unit in view()["units"]}  # as shown: stale included
         with access.state() as store:
-            approve_unit(store, unit_id, unit_ids=ids, busy=access.busy_unit)
+            approve_unit(store, unit_id, unit_ids=statuses, status=statuses.get(unit_id), busy=access.busy_unit)
         return changed()
 
     @app.post("/api/units/{unit_id}/select-version")

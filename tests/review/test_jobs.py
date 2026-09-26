@@ -89,7 +89,7 @@ def test_regenerating_makes_a_new_image_beside_the_old_one(tmp_path, plan_data, 
     assert (info.kind, info.unit) == ("regenerate", "001")
     assert [v.v for v in unit.versions] == [1, 2]
     assert (unit.current_version, unit.compare_with, unit.approved_version, unit.status) == (2, 1, None, "generated")
-    assert job_events(events) == [("regenerate", "started"), ("regenerate", "finished")]
+    assert job_events(events) == [("regenerate", "started"), ("regenerate", "progress"), ("regenerate", "finished")]
     assert page.access.job is None and not (page.project / ".lock").exists()
     entries = [json.loads(line) for line in (tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
     assert {e["kind"] for e in entries} == {"image", "vision"} and {e["unit"] for e in entries} == {"001"}
@@ -141,7 +141,9 @@ def test_a_daily_limit_pauses_the_job_with_a_masked_message(tmp_path, plan_data,
     _, events = page.run(lambda: page.jobs.regenerate("001"))
     [(kind, data)] = [e for e in events if e[0] == "job" and e[1]["state"] == "paused"]
     assert "daily limit" in data["message"] and "tok-secret" not in data["message"]
-    assert page.unit("001").status == "planned"
+    assert "No new image was made" in data["message"]
+    unit = page.unit("001")  # nothing new, so it keeps its approved image, still approved
+    assert (unit.status, unit.approved_version, unit.current_version, unit.compare_with) == ("approved", 1, 1, None)
 
 
 def test_replanning_with_a_hint_writes_plan_yaml_and_records_the_hash(tmp_path, plan_data, drawings, fake_images, sample_reply):
@@ -262,3 +264,17 @@ def test_approving_a_sheet_while_its_candidates_are_made_is_refused_and_keeps_bo
     approve_sheet(tmp_path, "anchor", 1, **kwargs)
     store = BootstrapStore.load(tmp_path, 1)
     assert store.state.anchor.approved == 1 and [c.n for c in store.state.anchor.candidates] == [1, 2, 3]
+
+
+def test_a_regeneration_whose_first_image_fails_keeps_the_approval(tmp_path, plan_data, drawings, fake_images):
+    bad = CFError(ErrorCategory.BAD_REQUEST, "the prompt was rejected", status=400)
+    page = Page(tmp_path, plan_data, drawings, fake_images([bad]))
+    copy_before = (page.project / "images" / "_history" / "001_v1.png").read_bytes()
+    _, events = page.run(lambda: page.jobs.regenerate("001"))
+    [(kind, data)] = [e for e in events if e[0] == "job" and e[1]["state"] == "finished"]
+    assert "001 is failed" in data["message"] and "the prompt was rejected" in data["message"]
+    assert "No new image was made" in data["message"]
+    unit = page.unit("001")
+    assert (unit.status, unit.approved_version, unit.current_version, unit.compare_with) == ("approved", 1, 1, None)
+    assert [v.v for v in unit.versions] == [1]
+    assert (page.project / "images" / "_history" / "001_v1.png").read_bytes() == copy_before
