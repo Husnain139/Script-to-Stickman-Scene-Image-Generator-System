@@ -176,7 +176,9 @@ def create_app(
             if task is not None:
                 await asyncio.gather(task, return_exceptions=True)
             if access.job is not None:
-                print(f"Waiting for the page's {access.job.noun()} to finish (Ctrl+C again to abandon it)",
+                # uvicorn 0.54 can't be interrupted here by a second Ctrl+C, so this promises nothing more
+                # than the wait itself (closing the terminal is the only way to abandon it).
+                print(f"Waiting for the page's {access.job.noun()} to finish before stopping…",
                       file=sys.stderr, flush=True)
             await jobs.wait()
 

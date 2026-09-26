@@ -278,3 +278,67 @@ def test_a_regeneration_whose_first_image_fails_keeps_the_approval(tmp_path, pla
     assert (unit.status, unit.approved_version, unit.current_version, unit.compare_with) == ("approved", 1, 1, None)
     assert [v.v for v in unit.versions] == [1]
     assert (page.project / "images" / "_history" / "001_v1.png").read_bytes() == copy_before
+
+
+def test_a_paused_regeneration_of_a_failed_unit_keeps_its_old_error_text(tmp_path, plan_data, drawings, fake_images):
+    """N2: set_status("generating") clears the unit's error; a pause with no new image must restore it."""
+    daily = CFError(ErrorCategory.DAILY_LIMIT, "daily free allocation for tok-secret", status=429)
+    page = Page(tmp_path, plan_data, drawings, fake_images([daily]))
+    store = StateStore.load(page.project)
+    store.set_status("001", "failed", error="an older failure")
+    _, events = page.run(lambda: page.jobs.regenerate("001"))
+    assert job_events(events)[-1] == ("regenerate", "paused")
+    unit = page.unit("001")
+    assert (unit.status, unit.error) == ("failed", "an older failure")
+
+
+def test_a_paused_regeneration_of_a_needs_review_unit_keeps_its_review_note(tmp_path, plan_data, drawings, fake_images):
+    """N2: the same loss happens to a needs_review unit's note, not only a failed one's error."""
+    daily = CFError(ErrorCategory.DAILY_LIMIT, "daily free allocation for tok-secret", status=429)
+    page = Page(tmp_path, plan_data, drawings, fake_images([daily]))
+    store = StateStore.load(page.project)
+    store.set_status("001", "needs_review", error="rewrite failed: something")
+    unit = store.unit("001")
+    unit.approved_version = None
+    store.save()
+    _, events = page.run(lambda: page.jobs.regenerate("001"))
+    assert job_events(events)[-1] == ("regenerate", "paused")
+    unit = page.unit("001")
+    assert (unit.status, unit.error) == ("needs_review", "rewrite failed: something")
+
+
+def test_a_first_failure_with_no_image_stays_failed_instead_of_going_back_to_planned(
+    tmp_path, plan_data, drawings, fake_images
+):
+    """N3: a unit that never had an image mustn't be silently restored to planned, hiding the failure."""
+    bad = CFError(ErrorCategory.BAD_REQUEST, "the prompt was rejected", status=400)
+    page = Page(tmp_path, plan_data, drawings, fake_images([bad]))
+    (page.project / "images" / "_history" / "002b_v1.png").unlink()  # else recover() would adopt it back
+    store = StateStore.load(page.project)
+    unit = store.unit("002b")
+    unit.status, unit.current_version, unit.approved_version, unit.versions, unit.error = "planned", None, None, [], None
+    store.save()
+    _, events = page.run(lambda: page.jobs.regenerate("002b"))
+    [(kind, data)] = [e for e in events if e[0] == "job" and e[1]["state"] == "finished"]
+    assert "002b is failed" in data["message"] and "the prompt was rejected" in data["message"]
+    assert "keeps" not in data["message"]  # nothing to keep: it never had an image
+    unit = page.unit("002b")
+    assert "the prompt was rejected" in unit.error
+    assert (unit.status, unit.current_version, unit.approved_version) == ("failed", None, None)
+
+
+def test_an_error_building_the_meter_or_run_log_does_not_drop_the_approval(
+    tmp_path, plan_data, drawings, fake_images, monkeypatch
+):
+    """N4: begin_regeneration must not run before something that can raise ahead of the render."""
+    page = Page(tmp_path, plan_data, drawings, fake_images())
+
+    def broken_meter(*args, **kwargs):
+        raise OSError("ledger unreadable")
+
+    monkeypatch.setattr(page.jobs, "_meter", broken_meter)
+    _, events = page.run(lambda: page.jobs.regenerate("001"))
+    [(kind, data)] = [e for e in events if e[0] == "job" and e[1]["state"] == "failed"]
+    assert "ledger unreadable" in data["message"]
+    unit = page.unit("001")
+    assert (unit.status, unit.approved_version, unit.current_version) == ("approved", 1, 1)

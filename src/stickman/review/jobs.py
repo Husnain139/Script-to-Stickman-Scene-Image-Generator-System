@@ -152,11 +152,13 @@ class Jobs:
             return f"Can't regenerate {unit_id}: {exc}", "failed"
         recover(store, expected)
         before = store.unit(unit_id)
-        current, approved, status = before.current_version, before.approved_version, before.status
+        current, approved, status, error = before.current_version, before.approved_version, before.status, before.error
         had = {version.v for version in before.versions}
-        store.begin_regeneration(unit_id)
+        # Built before begin_regeneration: a failure here (an unreadable ledger, say) must not drop the
+        # approval, since nothing has changed yet for it to be restored from.
         meter = self._meter(ctx.pricing, budget=True, project=self._project.name)
         log = RunLog.for_project(self._project, secrets=self._secrets)
+        store.begin_regeneration(unit_id)
         info = self._access.job
         try:
             async with client:
@@ -181,14 +183,16 @@ class Jobs:
                 message = f"{unit_id} is {unit.status.replace('_', ' ')}" + (f": {unit.error}" if unit.error else ".")
                 state = "finished"
         finally:
-            # No new image: the approved image is still the one shown, so the approval comes back (and the
-            # status it had), with nothing to compare. The message above still says what went wrong.
+            # No new image: if the unit had one already, it's still the one shown, so the approval comes
+            # back (and the status and error it had), with nothing to compare. The message above still says
+            # what went wrong. A unit with no previous image is left as the renderer finished it (spec
+            # §12.2 [M6] restores what was there, not what wasn't).
             nothing_new = not ({version.v for version in store.unit(unit_id).versions} - had)
-            if nothing_new:
-                store.end_regeneration(unit_id, current=current, approved=approved, status=status)
-                version = store.unit(unit_id).version(current) if current is not None else None
+            if nothing_new and current is not None:
+                store.end_regeneration(unit_id, current=current, approved=approved, status=status, error=error)
+                version = store.unit(unit_id).version(current)
                 write_current_copy(self._project, job.stem, version.file if version is not None else None)
-        if nothing_new:
+        if nothing_new and current is not None:
             keeps = "its previous image and approval" if approved is not None else "its previous image"
             message += f" No new image was made, so {unit_id} keeps {keeps}."
         return message, state

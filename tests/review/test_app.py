@@ -242,7 +242,8 @@ def test_stopping_the_server_during_a_job_says_what_it_waits_for(tmp_path, plan_
     with TestClient(app) as client:
         assert client.post("/api/units/001/regenerate", headers=WRITE).status_code == 202
     err = capsys.readouterr().err
-    assert "Waiting for the page's regeneration of 001 to finish (Ctrl+C again to abandon it)" in err
+    assert "Waiting for the page's regeneration of 001 to finish before stopping…" in err
+    assert "Ctrl+C" not in err  # N1: a second Ctrl+C can't abandon this wait under uvicorn 0.54
     assert StateStore.load(project).unit("001").versions  # the job finished before the server stopped
 
 

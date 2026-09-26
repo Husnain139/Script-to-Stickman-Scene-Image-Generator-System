@@ -197,17 +197,20 @@ class StateStore:
         self.save()
 
     def end_regeneration(
-        self, unit_id: str, *, current: int | None, approved: int | None, status: UnitStatus
+        self, unit_id: str, *, current: int | None, approved: int | None, status: UnitStatus, error: str | None = None
     ) -> None:
-        """A regeneration that made no image: the unit is as it was before begin_regeneration, its approval
-        back and nothing to compare. A failed unit keeps the new error."""
+        """A regeneration that made no image: the unit is as it was before begin_regeneration, its approval,
+        status and error text back, and nothing to compare. `error` is the unit's error from before the run
+        (spec §12.2 [M6]). A run that itself ended the unit `failed` with a fresh error of its own keeps
+        that one instead: the run's own chain (recover, a checker outage, a rewrite failure) had already
+        set it, and it tells the more current story."""
         unit = self.unit(unit_id)
         unit.current_version = current
         unit.approved_version = approved
         unit.status = status
         unit.compare_with = None
-        if status != "failed":
-            unit.error = None
+        if not (status == "failed" and unit.error):
+            unit.error = error
         self.save()
 
     def next_version(self, unit_id: str) -> int:
