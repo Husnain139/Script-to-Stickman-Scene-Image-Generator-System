@@ -27,6 +27,11 @@ Step = Literal["anchor", "mascot"]
 _NAME = re.compile(r"^c(?P<n>[1-9]\d*)\.png$")
 
 
+def bootstrap_folder(workspace: Path, style_version: int) -> Path:
+    """library/_bootstrap/v<style_version>/, known before bootstrap.json is read (the lock lives there)."""
+    return workspace / BOOTSTRAP_DIR / f"v{style_version}"
+
+
 class BootstrapError(Exception):
     """bootstrap.json can't be read (CLI exit code 1). Nothing is written when this is raised."""
 
@@ -72,7 +77,7 @@ class BootstrapStore:
 
     @property
     def folder(self) -> Path:
-        return self.workspace / BOOTSTRAP_DIR / f"v{self.state.style_version}"
+        return bootstrap_folder(self.workspace, self.state.style_version)
 
     @property
     def path(self) -> Path:
@@ -173,6 +178,12 @@ class BootstrapStore:
         if candidate.n != n or candidate.file != self.relative(path):
             return None
         return candidate.model_copy(update={"qc": None})
+
+
+def made_with(candidate: Candidate, anchor_label: str) -> bool:
+    """A mascot-sheet candidate made with this anchor reference copy: `anchor_label` is its path and sha256,
+    as RefImage.label gives it. One made with a previous anchor never counts, and can't be approved."""
+    return candidate.refs == [anchor_label]
 
 
 def ranked(candidates: Sequence[Candidate]) -> list[Candidate]:

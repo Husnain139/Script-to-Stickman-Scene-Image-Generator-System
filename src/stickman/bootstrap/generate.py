@@ -17,7 +17,7 @@ from pathlib import Path
 from PIL import Image
 
 from stickman.bootstrap.prompts import anchor_expected, anchor_prompt, mascot_expected, mascot_prompt
-from stickman.bootstrap.store import BootstrapStore, Candidate, Step
+from stickman.bootstrap.store import BootstrapStore, Candidate, Step, made_with
 from stickman.budget import BudgetExceeded
 from stickman.cf.errors import CFError
 from stickman.config_files import MascotConfig, StyleConfig
@@ -68,6 +68,13 @@ class StepPlan:
     references: tuple[RefImage, ...]
     estimate_usd: float
     expected: ExpectedPicture
+
+    def current(self, candidates: Sequence[Candidate]) -> list[Candidate]:
+        """The candidates that count: every anchor candidate, and the mascot-sheet candidates made with the
+        approved anchor as it is now. The others are listed, never checked again, and can't be approved."""
+        if not self.references:
+            return list(candidates)
+        return [c for c in candidates if made_with(c, self.references[0].label)]
 
     def jobs(self, store: BootstrapStore, count: int, *, seeds: Callable[[], int] = random_seed) -> list[CandidateJob]:
         first = store.next_number(self.step)
@@ -121,7 +128,7 @@ class CandidateMaker:
         self.errors: dict[str, str] = {}
 
     async def run(self, plan: StepPlan, jobs: Sequence[CandidateJob]) -> RunResult:
-        """The recorded candidates with no QC result are checked first (no new image), then the new ones
+        """The current candidates with no QC result are checked first (no new image), then the new ones
         are made and checked, at most `concurrency` at once. Once the run is stopping (daily limit,
         budget, a rejected token, the circuit breaker) nothing new starts and running work finishes."""
         started = time.perf_counter()
@@ -147,7 +154,7 @@ class CandidateMaker:
                 if self._on_done is not None:
                     self._on_done()
 
-        unchecked = [c for c in self._store.step(plan.step).candidates if c.qc is None]
+        unchecked = [c for c in plan.current(self._store.step(plan.step).candidates) if c.qc is None]
         work: list[Callable[[], Awaitable[None]]] = [
             *(lambda c=c: self._check_saved(plan, c) for c in unchecked),
             *(lambda job=job: self._make(plan, job) for job in jobs),

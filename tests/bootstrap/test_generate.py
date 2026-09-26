@@ -88,6 +88,24 @@ def test_mascot_candidates_are_made_with_the_anchor_in_slot_0(tmp_path, fake_ima
     assert first.refs[0].startswith("library/style/anchor_v1_ref.png#sha256:")
 
 
+def test_only_mascot_candidates_made_with_the_anchor_as_it_is_now_are_current_and_rechecked(tmp_path, fake_images):
+    run = Setup(tmp_path, fake_images(chat=lambda model, messages: TRANSIENT), retry=RetrySettings(transient_max=0),
+                anchor=True)
+    run.go("mascot", 2)  # made with this anchor, left unchecked
+    older = run.store.state.mascot.candidates[0].model_copy(
+        update={"n": 3, "file": "library/_bootstrap/v1/mascot/c3.png", "refs": ["library/style/anchor_v1_ref.png#sha256:old"]}
+    )
+    (tmp_path / older.file).write_bytes((tmp_path / run.store.state.mascot.candidates[0].file).read_bytes())
+    run.store.add("mascot", older)
+    plan = run.plan("mascot")
+    assert [c.n for c in plan.current(run.store.state.mascot.candidates)] == [1, 2]
+    assert [c.n for c in run.plan("anchor").current(run.store.state.anchor.candidates)] == []
+    later = Setup(tmp_path, fake_images(), anchor=False)
+    assert later.go("mascot", 0).stop is None
+    assert len(later.client.chat_calls) == 2  # c1 and c2; c3 was made with a previous anchor
+    assert later.store.step("mascot").candidate(3).qc is None and later.maker.errors == {}
+
+
 def test_estimates_follow_the_klein_9b_formula(tmp_path, fake_images):
     run = Setup(tmp_path, fake_images(), anchor=True)
     assert run.plan("anchor").estimate_usd == pytest.approx(0.015)

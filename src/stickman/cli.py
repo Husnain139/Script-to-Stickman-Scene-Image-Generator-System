@@ -18,9 +18,18 @@ from rich.markup import escape
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 from ruamel.yaml.comments import CommentedMap
 
-from stickman.bootstrap.approve import ApprovalError, approve_anchor, approve_mascot
+from stickman.bootstrap.approve import ApprovalError, approve_anchor, approve_mascot, mascot_version_mismatch
 from stickman.bootstrap.generate import CandidateJob, CandidateMaker, StepPlan, step_plan
-from stickman.bootstrap.store import BootstrapError, BootstrapStore, Candidate, Step, pending_step, ranked
+from stickman.bootstrap.store import (
+    BootstrapError,
+    BootstrapStore,
+    Candidate,
+    Step,
+    bootstrap_folder,
+    mascot_done,
+    pending_step,
+    ranked,
+)
 from stickman.budget import Budget
 from stickman.cf.client import CloudflareClient
 from stickman.cf.errors import CFError, ErrorCategory
@@ -428,12 +437,9 @@ def bootstrap(
     console.print(f"Bootstrap: style v{style.style_version}")
     if approve_anchor_n is not None and approve_mascot_n is not None:
         _fail("Approve one candidate at a time.", EXIT_USER_ERROR)
-    try:
-        store = BootstrapStore.load(root, style.style_version)
-    except BootstrapError as exc:
-        _fail(f"{exc}. Nothing was changed.", EXIT_USER_ERROR)
-    store.folder.mkdir(parents=True, exist_ok=True)
-    lock = ProjectLock(store.folder)
+    folder = bootstrap_folder(root, style.style_version)
+    folder.mkdir(parents=True, exist_ok=True)
+    lock = ProjectLock(folder)
     try:
         lock.acquire()
     except LockHeld as exc:
@@ -441,6 +447,10 @@ def bootstrap(
     try:
         if lock.removed_stale is not None:
             console.print(f"[yellow]Removed a stale lock left by PID {lock.removed_stale}, which is no longer running.[/yellow]")
+        try:
+            store = BootstrapStore.load(root, style.style_version)  # under the lock: no other run changes it now
+        except BootstrapError as exc:
+            _fail(f"{exc}. Nothing was changed.", EXIT_USER_ERROR)
         for note in store.recover():
             console.print(escape(note))
         if approve_anchor_n is not None:
@@ -466,6 +476,8 @@ def _approve(cfg: AppConfig, store: BootstrapStore, mascot: MascotConfig, step: 
             written = approve_mascot(store, n, mascot=mascot, ref_max_side=max_side)
     except ApprovalError as exc:
         _fail(str(exc), EXIT_USER_ERROR)
+    except ConfigError as exc:
+        _fail(str(exc), EXIT_CONFIG_ERROR)
     candidate = store.step(step).candidate(n)
     if candidate.qc is None:
         console.print(f"[yellow]c{n} was never checked by QC; approved anyway.[/yellow]")
@@ -475,7 +487,13 @@ def _approve(cfg: AppConfig, store: BootstrapStore, mascot: MascotConfig, step: 
     if previous is not None and previous != n:
         console.print("Images made with the previous one become stale (their reference images changed).")
     if step == "anchor":
-        console.print("Next: `stickman bootstrap` makes the mascot sheet candidates, with this anchor as their reference.")
+        if not mascot_done(store.workspace, mascot, store.state.style_version):
+            console.print("Next: `stickman bootstrap` makes the mascot sheet candidates, with this anchor as their reference.")
+        elif previous != n:
+            console.print(
+                "The approved mascot sheet was made with the previous anchor. To redo it, clear `seed` in "
+                "config/mascot.yaml and run `stickman bootstrap`."
+            )
     else:
         console.print(escape(
             f"Bootstrap is complete: the mascot's seed ({candidate.seed}) and model are in config/mascot.yaml. "
@@ -496,15 +514,18 @@ def _bootstrap_step(
             f"(seed {mascot.seed}, {mascot.model})."
         ))
         return
+    mismatch = mascot_version_mismatch(mascot, style.style_version) if step == "mascot" else None
+    if mismatch is not None:
+        _fail(mismatch, EXIT_USER_ERROR)  # before any candidate is made: it could never be approved
     wanted = candidates or (settings.bootstrap.anchor_candidates if step == "anchor" else settings.bootstrap.mascot_candidates)
     try:
         plan = step_plan(step, workspace=root, settings=settings, style=style, mascot=mascot, pricing=pricing,
                          files=ReferenceFiles(root, ref_max_side=settings.image.ref_max_side))
     except ConfigError as exc:
         _fail(str(exc), EXIT_CONFIG_ERROR)
-    existing = store.step(step).candidates
-    jobs = plan.jobs(store, max(0, wanted - len(existing)))
-    unchecked = [c for c in existing if c.qc is None]
+    current = plan.current(store.step(step).candidates)  # a mascot candidate made with a previous anchor doesn't count
+    jobs = plan.jobs(store, max(0, wanted - len(current)))
+    unchecked = [c for c in current if c.qc is None]
     errors: dict[str, str] = {}
     result: RunResult | None = None
     log = RunLog.for_project(store.folder, secrets=_secrets(cfg))
@@ -518,15 +539,16 @@ def _bootstrap_step(
         meter = Meter(project=BOOTSTRAP_PROJECT, ledger=ledger, budget=budget, pricing=pricing)
         _print_bootstrap_start(cfg, pricing, ledger, now, plan, jobs, unchecked)
         result, errors = asyncio.run(_make_candidates(cfg, store, meter, log, plan, jobs, len(jobs) + len(unchecked)))
-    _print_candidates(store, step, errors)
+    _print_candidates(store, plan, errors)
     if result is not None:
         _exit_for(result, log, again="stickman bootstrap")
-    if not store.step(step).candidates:
+    current = plan.current(store.step(step).candidates)
+    if not current:
         _fail("No candidate could be made (see the errors above). Run `stickman bootstrap` again.", EXIT_USER_ERROR)
     option = "--approve-anchor" if step == "anchor" else "--approve-mascot"
     console.print(escape(
         f"Look at the candidates, then approve one: `stickman bootstrap {option} <N>`. "
-        f"`stickman bootstrap --candidates {len(store.step(step).candidates) + 2}` adds more."
+        f"`stickman bootstrap --candidates {len(current) + 2}` adds more."
     ))
     raise typer.Exit(EXIT_PAUSED)
 
@@ -568,8 +590,10 @@ async def _make_candidates(
             return await maker.run(plan, jobs), maker.errors
 
 
-def _print_candidates(store: BootstrapStore, step: Step, errors: dict[str, str]) -> None:
+def _print_candidates(store: BootstrapStore, plan: StepPlan, errors: dict[str, str]) -> None:
+    step = plan.step
     state = store.step(step)
+    current = {c.n for c in plan.current(state.candidates)}
     if state.candidates:
         console.print(f"{STEP_NAMES[step].capitalize()} candidates, best first:")
     for c in ranked(state.candidates):
@@ -581,7 +605,8 @@ def _print_candidates(store: BootstrapStore, step: Step, errors: dict[str, str])
             verdict = f"failed: {c.qc.reason}"
         idea = f"idea {c.qc.score}/5" if c.qc is not None and c.qc.vision is not None else "idea -"
         approved = "  (approved)" if state.approved == c.n else ""
-        console.print(escape(f"  c{c.n:<3} {verdict:<26} {idea:<9} {c.file}{approved}"))
+        previous = "" if c.n in current else "  (made with a previous anchor)"
+        console.print(escape(f"  c{c.n:<3} {verdict:<26} {idea:<9} {c.file}{approved}{previous}"))
     for label, error in errors.items():
         console.print(f"[yellow]{escape(f'{label}: {error}')}[/yellow]")
 

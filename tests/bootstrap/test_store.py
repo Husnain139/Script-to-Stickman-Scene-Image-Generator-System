@@ -8,6 +8,8 @@ from stickman.bootstrap.store import (
     BootstrapStore,
     Candidate,
     anchor_done,
+    bootstrap_folder,
+    made_with,
     mascot_done,
     pending_step,
     ranked,
@@ -126,3 +128,14 @@ def test_the_pending_step_is_the_anchor_then_the_mascot_then_none(tmp_path):
     approved = mascot.model_copy(update={"seed": 7, "model": KLEIN_9B})
     assert mascot_done(tmp_path, approved, 1) and not mascot_done(tmp_path, approved, 2)
     assert pending_step(tmp_path, approved, 1) is None
+
+
+def test_a_mascot_candidate_counts_only_when_made_with_the_anchor_as_it_is_now():
+    label = "library/style/anchor_v1_ref.png#sha256:abc"
+    assert made_with(candidate(1, "mascot", refs=[label]), label)
+    assert not made_with(candidate(2, "mascot", refs=["library/style/anchor_v1_ref.png#sha256:old"]), label)
+    assert not made_with(candidate(3, "mascot"), label)  # no reference at all
+
+
+def test_the_folder_is_known_without_loading_the_store(tmp_path):
+    assert bootstrap_folder(tmp_path, 3) == BootstrapStore.load(tmp_path, 3).folder
