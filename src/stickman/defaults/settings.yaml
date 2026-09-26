@@ -53,7 +53,7 @@ qc:
   max_color_fraction: 0.01
   min_white_fraction: 0.55
   black_lum: 50
-  max_black_blob_fraction: 0.04
+  max_black_blob_fraction: 0.06
   min_ink_fraction: 0.005
   uniform_std_max: 6
   blur_lap_var_min: 15

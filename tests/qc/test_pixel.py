@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from stickman.qc.pixel import QC_HEIGHT, largest_component, pixel_check, qc_copy
 from stickman.settings import QCSettings
@@ -61,6 +61,18 @@ def test_the_largest_black_area_is_measured_only_when_all_black_pixels_are_over_
     assert pixel_check(drawings.shoes_and_tie(), QCSettings()).black_blob_fraction is None
     blob = pixel_check(drawings.big_black_blob(), QCSettings())
     assert blob.black_blob_fraction == pytest.approx(0.109, abs=0.01)
+
+
+@pytest.mark.parametrize(("box", "fraction", "reason"), [
+    ((40, 40, 220, 185), 0.05, None),  # the live check's clean dense line art measured 0.0436 and 0.0495
+    ((40, 40, 240, 222), 0.07, "background_filled"),
+])
+def test_a_black_area_passes_up_to_six_percent_of_the_image(drawings, box, fraction, reason):
+    image = drawings.clean()
+    ImageDraw.Draw(image).rectangle(box, fill=(0, 0, 0))
+    result = pixel_check(image, QCSettings())
+    assert result.black_blob_fraction == pytest.approx(fraction, abs=0.005)
+    assert result.reason == reason
 
 
 def test_a_filled_background_outranks_colour(drawings):

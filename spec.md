@@ -912,7 +912,7 @@ Failed: 024b (bad_request: …)   Needs review: 013a (text), 020 (safety_filtere
 | `max_color_fraction` | `0.01` | Colour pixels above this fraction → `style` |
 | `min_white_fraction` | `0.55` | Near-white pixels below this fraction → `background_filled`. Tune it on dense scenes in M5. |
 | `black_lum` | `50` | A pixel counts as black below this luminance |
-| `max_black_blob_fraction` | `0.04` | The **largest connected** black area (8-connected) above this fraction of the image → `background_filled`. This lets shoes and ties pass. |
+| `max_black_blob_fraction` | `0.06` [M4] | The **largest connected** black area (8-connected) above this fraction of the image → `background_filled`. This lets shoes and ties pass. |
 | `min_ink_fraction` | `0.005` | Ink pixels (luminance below 128) below this fraction → `empty` |
 | `uniform_std_max` | `6` | A luminance standard deviation below this means the image is uniform (see the order below) |
 | `blur_lap_var_min` | `15` | Variance of the Laplacian below this means the image is blurred (see the order below) |
@@ -931,6 +931,7 @@ So `safety_filtered` is only ever given to a **dark or blurred** image, never to
 - The largest black area is measured only when all black pixels together are over `max_black_blob_fraction`, since no single area can be larger. Otherwise it's recorded as null.
 - In step 4, a filled background outranks colour, as in the §11.3 order.
 - The spec defaults were checked against 23 real Klein images: all pass.
+- **`max_black_blob_fraction` is 0.06, not 0.04.** In the M4 live check (`docs/m4-qc-check.md`), two clean, dense Klein images failed as `background_filled` at 0.0436 and 0.0495: their figures, fire and ground line join into one black component. Changed after the live check, at the user's decision (2026-09-26).
 
 ### 11.2 Vision check
 Runs only if the pixel checks pass, since there's no point paying for the vision call otherwise.

@@ -70,8 +70,8 @@ def _sentence(reason: str, fix: FixContext) -> str | None:
             return NO_FIGURES_FIX
         if expected.fewest != expected.figures:
             return RANGE_COUNT_FIX.format(fewest=expected.fewest, figures=expected.figures, cast=expected.cast)
-        noun = "figure" if fix.expected.figures == 1 else "figures"
-        return COUNT_FIX.format(figures=fix.expected.figures, noun=noun, cast=fix.expected.cast)
+        noun = "figure" if expected.figures == 1 else "figures"
+        return COUNT_FIX.format(figures=expected.figures, noun=noun, cast=expected.cast)
     if reason == "mascot_mismatch":
         return (MASCOT_FIX if fix.mascot_in_image_1 else MASCOT_FIX_NO_REF).format(identity=fix.identity)
     return None  # empty, weak_idea and safety_filtered: a new seed or an LLM rewrite, no prompt change
