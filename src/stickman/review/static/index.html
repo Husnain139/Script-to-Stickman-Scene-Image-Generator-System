@@ -1,1 +1,25 @@
-<!doctype html><title>stickman review</title>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stickman review</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="bar">
+  <h1 class="project" id="project">Stickman review</h1>
+  <nav class="tabs" aria-label="Views">
+    <button type="button" data-view="plan">Plan</button>
+    <button type="button" data-view="sheets">Sheets</button>
+    <button type="button" data-view="tests">Tests</button>
+    <button type="button" data-view="gallery">Gallery</button>
+  </nav>
+  <p class="budget" id="budget"></p>
+</header>
+<p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+<main id="main"><p class="empty">Loading the project…</p></main>
+<div id="overlay" class="overlay" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
