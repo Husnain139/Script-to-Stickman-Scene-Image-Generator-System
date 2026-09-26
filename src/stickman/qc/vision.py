@@ -23,9 +23,11 @@ TYPICAL_TOKENS = (1300, 900)  # input and output tokens of a typical check, for 
 
 
 class VisionReport(BaseModel):
-    """The vision model's answer (spec §11.2 schema)."""
+    """The vision model's answer (spec §11.2 schema). The one model with extra="ignore": it is parsed
+    from an LLM reply, and a key the schema doesn't have is dropped rather than failing the check. The
+    schema shown to the model still says additionalProperties: false, so the prompt is unchanged."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore", json_schema_extra={"additionalProperties": False})
 
     has_text: bool
     text_seen: str | None = None

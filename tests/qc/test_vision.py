@@ -86,7 +86,6 @@ def test_a_fenced_reply_with_a_leading_blank_line_is_read():
         ("I can't tell.", "stop", "the reply contains no JSON object"),
         ("thinking about the image...", "length", CUT_OFF_ERROR),
         (json.dumps({**GOOD, "matches_visual_idea": 9}), "stop", "matches_visual_idea: Input should be less than or equal to 5"),
-        (json.dumps({**GOOD, "colour": "none"}), "stop", "colour: Extra inputs are not permitted"),
     ],
 )
 def test_an_unusable_reply_gives_its_errors(text, finish, error):
@@ -97,6 +96,17 @@ def test_an_unusable_reply_gives_its_errors(text, finish, error):
 def test_nulls_for_the_text_fields_are_accepted():
     report, _ = parse_vision(json.dumps({**GOOD, "text_seen": None, "notes": None}), finish_reason="stop")
     assert report is not None and report.notes is None
+
+
+def test_an_extra_key_in_the_reply_is_ignored():
+    reply = "\n\n```json\n" + json.dumps({
+        "has_text": False, "text_seen": "", "style_ok": True, "anatomy_ok": True, "watermark_like": False,
+        "character_count": 1, "matches_visual_idea": 4, "mascot_matches_sheet": None, "notes": "",
+        "confidence": 0.9,
+    }) + "\n```"
+    report, errors = parse_vision(reply, finish_reason="stop")
+    assert errors == [] and report is not None
+    assert "confidence" not in report.model_dump()
 
 
 def test_a_retry_shows_the_model_its_reply_and_the_errors():

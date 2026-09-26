@@ -278,6 +278,26 @@ def test_bytes_that_are_not_an_image_fail_the_unit(tmp_path, plan_data, fake_ima
     assert run.store.unit("001").error.startswith("bad_image: ")
 
 
+def test_an_unreadable_image_is_made_again_next_run(tmp_path, plan_data, fake_images):
+    run = Run(tmp_path, plan_data, fake_images(), qc=QCSettings(vision=False))
+    run.go(run.jobs[:1])
+    unit = run.store.unit("001")
+    unit.versions[0].qc = None  # it still needs its check
+    run.store.save()
+    (run.project / unit.versions[0].file).write_bytes(b"not a png any more")
+    run.qc = QCSettings()
+    asyncio.run(run.make_renderer(fake_images()).run(run.jobs[:1]))
+    unit = run.store.unit("001")
+    assert (unit.status, unit.current_version) == ("failed", None)
+    assert unit.error.startswith("bad_image: can't read images/_history/001_v1.png")
+    assert not (run.project / "images" / "001_00-00.0.png").exists()
+    later = fake_images()
+    asyncio.run(run.make_renderer(later).run(run.jobs[:1]))
+    assert len(later.calls) == 1  # a new image, not the same failing check
+    unit = run.store.unit("001")
+    assert (unit.status, unit.current_version) == ("generated", 2)
+
+
 def test_reference_images_are_sent_in_slot_order_and_recorded(tmp_path, plan_data, fake_images):
     for relative, size in (("library/style/anchor_v1_ref.png", (512, 384)), ("library/mascot/ref_v1.png", (384, 512))):
         path = tmp_path / relative

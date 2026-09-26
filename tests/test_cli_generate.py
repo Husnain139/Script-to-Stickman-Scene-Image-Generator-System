@@ -265,11 +265,27 @@ def test_images_made_before_qc_are_checked_without_a_new_image(workspace, monkey
     client = use_images(monkeypatch, fake_images())
     result = generate(workspace)
     assert result.exit_code == 0, result.output
-    assert ("Checking 1 image(s) made before QC existed. Each is checked, not made again, unless it fails "
-            "its check; then it is retried like any other.") in result.output
+    assert ("Checking 1 image(s) that have no check yet (made before QC, or left unchecked when the checker "
+            "couldn't be reached). Each is checked, not made again, unless it fails its check; then it is "
+            "retried like any other.") in result.output
     assert "retries not included" in result.output
     assert client.calls == [] and len(client.chat_calls) == 1
     assert json.loads(path.read_text(encoding="utf-8"))["units"]["001"]["versions"][0]["qc"]["passed"] is True
+
+
+def test_an_image_left_unchecked_by_a_vision_outage_is_counted_as_a_check(workspace, monkeypatch, fake_images):
+    outage = CFError(ErrorCategory.TRANSIENT, "bad gateway", status=502)
+    (workspace / "config").mkdir()
+    (workspace / "config" / "settings.yaml").write_text("retry:\n  transient_max: 0\n", encoding="utf-8")
+    use_images(monkeypatch, fake_images(chat=lambda model, messages: outage))
+    generate(workspace, "--limit", "1")
+    assert statuses(workspace)["001"] == "failed"
+    client = use_images(monkeypatch, fake_images())
+    result = generate(workspace, "--limit", "1")
+    assert result.exit_code == 0, result.output
+    assert "Checking 1 image(s) that have no check yet" in result.output
+    assert not any(row.startswith("Generating") for row in result.output.splitlines())
+    assert client.calls == [] and len(client.chat_calls) == 1
 
 
 def test_the_run_start_estimate_says_it_leaves_out_retries(workspace, monkeypatch, fake_images):

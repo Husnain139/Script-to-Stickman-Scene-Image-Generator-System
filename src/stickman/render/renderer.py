@@ -157,7 +157,9 @@ class Renderer:
                     try:
                         qc = await self._check(job, chain[-1], images.get(step.v))
                     except (OSError, ImageDecodeError) as exc:
-                        self._store.set_status(unit_id, "failed", error=f"bad_image: can't read {chain[-1].file}: {exc}")
+                        # The file can't be checked, so no version counts as current: the next run
+                        # makes a new image instead of failing the same check again.
+                        self._finish(job, "failed", None, f"bad_image: can't read {chain[-1].file}: {exc}")
                         return
                     except CFError as exc:
                         if exc.category in STOPS:

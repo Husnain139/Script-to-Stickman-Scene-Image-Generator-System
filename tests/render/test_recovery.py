@@ -132,3 +132,14 @@ def test_a_stale_unit_whose_current_version_failed_qc_goes_back_to_needs_review(
     notes = recover(store, EXPECTED)
     assert store.unit("006a").status == "needs_review"
     assert "No longer stale: 006a" in notes
+
+
+def test_the_current_copy_of_a_unit_with_no_current_version_is_removed(tmp_path):
+    store = StateStore.load(tmp_path)
+    history_image(tmp_path, 1)
+    store.add_version("006a", version(1), status="generated")
+    store.finish("006a", "failed", current=None, clear_current=True, error="refused: no")
+    copy = tmp_path / "images" / "006a_00-21.0.png"
+    copy.write_bytes(b"old design")
+    recover(store, EXPECTED)
+    assert not copy.exists()

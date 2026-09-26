@@ -39,6 +39,7 @@ from stickman.plan.store import PlanChangedError, load_plan, to_document, update
 from stickman.pricing import format_usd, llm_cost_usd, load_pricing, usd_neurons
 from stickman.project import ProjectError, check_unplanned, choose_project_dir, create_project, resolve_project, slugify
 from stickman.qc.vision import TYPICAL_TOKENS
+from stickman.render.chain import chain_of
 from stickman.render.jobs import JobBuilder, JobError, RenderContext, RenderJob
 from stickman.render.lock import LockHeld, ProjectLock
 from stickman.render.recovery import recover
@@ -477,8 +478,19 @@ def _check_usd(cfg: AppConfig, ctx: RenderContext) -> float:
     return 0.0 if price is None else llm_cost_usd(price, *TYPICAL_TOKENS)
 
 
+def _check_only(store: StateStore, jobs: list[RenderJob]) -> set[str]:
+    """Units whose next step is a check of an image they already have: made before QC, saved just
+    before a kill, or left unchecked because the checker couldn't be reached (spec §9.4 [M4])."""
+    ids = set()
+    for job in jobs:
+        chain = chain_of(store.unit(job.unit_id), job.fingerprint)
+        if chain and chain[-1].qc is None:
+            ids.add(job.unit_id)
+    return ids
+
+
 def _print_run_start(jobs: list[RenderJob], store: StateStore, cfg: AppConfig, ctx: RenderContext, ledger: Ledger, now: datetime) -> None:
-    check_only = {job.unit_id for job in jobs if store.unit(job.unit_id).status == "generated"}  # made before QC
+    check_only = _check_only(store, jobs)
     to_make = [job for job in jobs if job.unit_id not in check_only]
     check = _check_usd(cfg, ctx)
     estimate = sum(job.estimate_usd for job in to_make) + check * len(jobs)
@@ -489,8 +501,9 @@ def _print_run_start(jobs: list[RenderJob], store: StateStore, cfg: AppConfig, c
         console.print(escape(f"Generating {len(to_make)} unit(s) on {to_make[0].model}{how} {cost}."))
     if check_only:
         console.print(escape(
-            f"Checking {len(check_only)} image(s) made before QC existed. Each is checked, not made again, "
-            "unless it fails its check; then it is retried like any other."
+            f"Checking {len(check_only)} image(s) that have no check yet (made before QC, or left unchecked when "
+            "the checker couldn't be reached). Each is checked, not made again, unless it fails its check; then it "
+            "is retried like any other."
         ))
         if not to_make:
             console.print(escape(f"Cost {cost}."))
