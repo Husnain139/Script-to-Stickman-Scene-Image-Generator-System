@@ -8,31 +8,28 @@ import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any
 
 from PIL import Image
 
 from stickman.budget import BudgetExceeded
 from stickman.cf.client import ImageResult, LLMResult
 from stickman.cf.errors import CFError, ErrorCategory
-from stickman.cf.retry import with_retries
 from stickman.fsutil import safe_write
-from stickman.meter import Meter, Metered, billing_of, local_now
-from stickman.plan.llm import ChatClient, finish_reason
+from stickman.meter import Meter, Metered, local_now, unit_scope
+from stickman.plan.llm import ChatClient
 from stickman.plan.models import PlanUnit
-from stickman.qc.decide import QCResult, decide
-from stickman.qc.pixel import pixel_check
-from stickman.qc.vision import (
-    IMAGE_TOKENS,
-    VISION_ATTEMPTS,
-    VISION_MAX_TOKENS,
-    VisionReport,
-    parse_vision,
-    retry_messages,
-    vision_messages,
-    vision_png,
-    vision_prompt,
+from stickman.qc.decide import QCResult
+from stickman.render.calls import (  # noqa: F401  (re-exported: the CLI and tests import them from here)
+    ERROR_CHARS,
+    STOPS,
+    UNREACHABLE,
+    Calls,
+    RenderClient,
+    RunControl,
+    RunStopped,
+    StopReason,
+    error_text,
 )
 from stickman.render.chain import Check, Finish, Render, chain_of, finish_step, next_step
 from stickman.render.images import HISTORY_DIR, ImageDecodeError, decode_image, encode_png, history_name
@@ -42,80 +39,10 @@ from stickman.render.state import StateStore, UnitStatus, Version
 from stickman.runlog import RunLog, shorten
 from stickman.settings import ConfigError, QCSettings, RetrySettings
 
-ERROR_CHARS = 200  # how much of an API error message a unit keeps in state.json
-
-
-class RenderClient(Protocol):
-    async def generate_image(
-        self,
-        model: str,
-        *,
-        prompt: str,
-        width: int,
-        height: int,
-        seed: int,
-        steps: int | None = ...,
-        guidance: float | None = ...,
-        input_images: Sequence[bytes] = ...,
-    ) -> ImageResult: ...
-
-    async def chat(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        *,
-        temperature: float = ...,
-        max_tokens: int = ...,
-        response_format: dict[str, Any] | None = ...,
-    ) -> LLMResult: ...
-
-
-class StopReason(StrEnum):
-    DAILY_LIMIT = "daily_limit"
-    BUDGET = "budget"
-    CIRCUIT_BREAKER = "circuit_breaker"
-    AUTH = "auth"
-
-
-class RunStopped(Exception):
-    """The run is stopping, so this unit's request isn't started."""
-
-
-class RunControl:
-    """Whether the run is stopping, and why. The first reason is the one reported.
-
-    It is also the circuit breaker (spec §9.5): temporary errors in a row are counted per kind of
-    call (`image`, `vision`, `llm`), a success resets only its own kind's count, and any count reaching
-    `circuit_breaker` stops the run. So an outage of one model trips it while the others still answer."""
-
-    def __init__(self, circuit_breaker: int) -> None:
-        self.reason: StopReason | None = None
-        self.detail = ""
-        self._limit = circuit_breaker
-        self._in_a_row: dict[str, int] = {}
-
-    def stop(self, reason: StopReason, detail: str = "") -> None:
-        if self.reason is None:
-            self.reason, self.detail = reason, detail
-
-    def check(self) -> None:
-        if self.reason is not None:
-            raise RunStopped(str(self.reason))
-
-    def transient(self, kind: str) -> None:
-        """One attempt of a `kind` call ended in a temporary error."""
-        count = self._in_a_row.get(kind, 0) + 1
-        self._in_a_row[kind] = count
-        if count >= self._limit:
-            self.stop(StopReason.CIRCUIT_BREAKER, f"{count} temporary errors in a row ({kind} calls)")
-
-    def success(self, kind: str) -> None:
-        self._in_a_row[kind] = 0
-
 
 class GuardedChat:
     """The chat client of a run's plan rewrites (soften, redesign), which go through StageRunner, not
-    Renderer._call: no call starts once the run is stopping, and each attempt's temporary error counts
+    Calls._call: no call starts once the run is stopping, and each attempt's temporary error counts
     toward the circuit breaker as kind `llm` (spec §9.5)."""
 
     def __init__(self, client: ChatClient, control: RunControl, *, kind: str = "llm") -> None:
@@ -150,16 +77,6 @@ class RunResult:
     stop: StopReason | None
     detail: str
     elapsed_s: float
-
-
-
-# Errors that stop the whole run, from any call of any unit (spec §9.5).
-STOPS: dict[ErrorCategory, StopReason] = {
-    ErrorCategory.DAILY_LIMIT: StopReason.DAILY_LIMIT,
-    ErrorCategory.AUTH: StopReason.AUTH,
-}
-# A vision call that ends in one of these (after its retries) never reached the checker (spec §9.4 [M4]).
-UNREACHABLE = (ErrorCategory.TRANSIENT, ErrorCategory.RATE_LIMITED)
 
 
 class Renderer:
@@ -197,6 +114,7 @@ class Renderer:
         self._on_done = on_done
         self.control = control if control is not None else RunControl(retry.circuit_breaker)
         self.softened: list[str] = []  # units softened after a safety filter in this run
+        self._calls = Calls(client, meter, log, self.control, retry=retry, qc=qc, vision_model=vision_model, sleep=sleep)
 
     async def run(self, jobs: Sequence[RenderJob]) -> RunResult:
         """Each job's unit, at most `concurrency` at once. A unit holds its slot for its whole chain, so
@@ -236,17 +154,32 @@ class Renderer:
                     self._finish(job, step.status, step.current, error)
                     return
                 if isinstance(step, Check):
+                    image = images.get(step.v)
+                    if image is None:  # made by an earlier run
+                        try:
+                            image = self._read(chain[-1])
+                        except (OSError, ImageDecodeError) as exc:
+                            # The file can't be read, so no version counts as current: the next run
+                            # makes a new image instead of failing the same check again. An OSError
+                            # elsewhere in the check (below) fails only the unit, keeping its version.
+                            self._finish(job, "failed", None, f"bad_image: can't read {chain[-1].file}: {exc}")
+                            return
                     try:
-                        qc = await self._check(job, chain[-1], images.get(step.v))
-                    except (OSError, ImageDecodeError) as exc:
-                        self._store.set_status(unit_id, "failed", error=f"bad_image: can't read {chain[-1].file}: {exc}")
-                        return
+                        qc = await self._check(job, image)
                     except CFError as exc:
                         if exc.category in STOPS:
                             raise
                         # The checker couldn't be reached: the image stays unchecked (qc null), and
                         # the next run checks it again without a new image (spec §9.4 [M4]).
                         self._store.set_status(unit_id, "failed", error=self._error_text(exc))
+                        return
+                    except OSError as exc:
+                        # A check-time OSError (a run-log or ledger write, say) fails only this unit,
+                        # keeping its current version. The image stays unchecked (qc null), so the
+                        # next run checks it again with no new image, same as the outage above.
+                        self._store.set_status(
+                            unit_id, "failed", error=f"check failed: {shorten(self._log.mask(str(exc)), ERROR_CHARS)}"
+                        )
                         return
                     self._store.set_qc(unit_id, step.v, qc)
                     continue
@@ -302,8 +235,7 @@ class Renderer:
             self._finish(job, done.status, done.current, error)
 
     def _error_text(self, exc: CFError) -> str:
-        # Masked before the cut, which could split a secret.
-        return f"{exc.category}: {shorten(self._log.mask(exc.message), ERROR_CHARS)}"
+        return error_text(exc, self._log)
 
     async def _rewrite(self, job: RenderJob, step: Render) -> RenderJob:
         """Soften or redesign the unit with the LLM (spec §7.5); the new job has its new fields. None
@@ -322,7 +254,8 @@ class Renderer:
 
         rewrite = self._rewriter.soften if step.rewrite == "soften" else self._rewriter.redesign
         try:
-            unit = await rewrite(job.unit_id, step.notes, check)
+            with unit_scope(job.unit_id):
+                unit = await rewrite(job.unit_id, step.notes, check)
         except CFError as exc:
             if exc.category in STOPS:
                 raise
@@ -333,67 +266,8 @@ class Renderer:
             check(unit)
         return built[-1]
 
-    async def _call(
-        self,
-        job: RenderJob,
-        kind: str,
-        request: Callable[[], Awaitable[Any]],
-        *,
-        model: str,
-        estimate: float,
-        fields: dict[str, Any],
-        cost_of: Callable[[Any], float | None] | None = None,
-    ) -> Metered[Any]:
-        """One image or vision call: budget-checked and ledgered by the meter, and logged here when it
-        fails. The breaker counts its temporary errors under its kind (spec §9.5); the rewrites' LLM
-        calls are counted by GuardedChat."""
-        self.control.check()
-        started = time.perf_counter()
-        try:
-            metered = await self._meter.run(
-                request, kind=kind, model=model, estimate_usd=estimate, unit=job.unit_id, cost_of=cost_of
-            )
-        except CFError as exc:
-            self._log.write(
-                kind=kind, unit=job.unit_id, model=model, **fields,
-                latency_s=round(time.perf_counter() - started, 2), ok=False, error=str(exc.category),
-                status=exc.status, message=shorten(self._log.mask(exc.message)),  # masked before the cut
-                billing=billing_of(exc), usd=estimate,
-            )
-            if exc.category is ErrorCategory.TRANSIENT:
-                self.control.transient(kind)
-            raise
-        self.control.success(kind)
-        return metered
-
-    def _image_fields(self, job: RenderJob) -> dict[str, Any]:
-        return {
-            "seed": job.seed, "width": job.width, "height": job.height, "steps": job.steps,
-            "refs": [ref.label for ref in job.references], "prompt": shorten(job.prompt),
-        }
-
-    async def _image(self, job: RenderJob) -> Metered[ImageResult]:
-        fields = self._image_fields(job)
-        metered = await self._call(
-            job,
-            "image",
-            lambda: self._client.generate_image(
-                job.model, prompt=job.prompt, width=job.width, height=job.height, seed=job.seed,
-                steps=job.steps, input_images=[ref.data for ref in job.references],
-            ),
-            model=job.model,
-            estimate=job.estimate_usd,
-            fields=fields,
-        )
-        self._log.write(
-            kind="image", unit=job.unit_id, model=job.model, **fields, latency_s=round(metered.latency_s, 2),
-            ok=True, billing="billed", usd=metered.usd, neurons=metered.result.neurons,
-            request_id=metered.result.request_id,
-        )
-        return metered
-
     async def _generate(self, job: RenderJob, step: Render) -> tuple[Version, Image.Image]:
-        metered = await with_retries(lambda: self._image(job), self._retry, sleep=self._sleep)
+        metered = await self._calls.image(job, unit=job.unit_id)
         reason = step.reason if step.retry_of is not None else None
         return self._save(job, metered, retry_of=step.retry_of, reason=reason)
 
@@ -426,66 +300,11 @@ class Renderer:
         self._store.add_version(job.unit_id, version, status="generating")
         return version, image
 
-    async def _check(self, job: RenderJob, version: Version, image: Image.Image | None) -> QCResult:
-        """Pixel checks, then the vision check only if they pass (spec §11.2)."""
-        if image is None:  # made by an earlier run
-            image = decode_image((self._store.project_dir / version.file).read_bytes())
-        pixel = await asyncio.to_thread(pixel_check, image, self._qc)
-        common = {
-            "expected_figures": job.expected.figures,
-            "min_figures": job.expected.fewest,
-            "reference": job.vision_reference is not None,
-            "min_idea_score": self._qc.min_idea_score,
-        }
-        if pixel.reason is not None or not self._qc.vision:
-            return decide(pixel, **common)
-        report, error = await self._vision(job, image)
-        return decide(pixel, report, vision_error=error, **common)
+    def _read(self, version: Version) -> Image.Image:
+        return decode_image((self._store.project_dir / version.file).read_bytes())
 
-    async def _vision(self, job: RenderJob, image: Image.Image) -> tuple[VisionReport | None, str | None]:
-        """Up to VISION_ATTEMPTS answers; the second sees the first one's errors (spec §9.4). The daily
-        limit and a rejected token stop the run. A checker that couldn't be reached (temporary errors or
-        rate limits past their retries) raises its CFError, so the image stays unchecked. A checker that
-        answered unusably (an invalid reply twice, bad_request, refused) is the result's vision_error."""
-        reference = job.vision_reference
-        prompt = vision_prompt(job.expected, reference=reference is not None)
-        messages = vision_messages(prompt, vision_png(image), reference.data if reference is not None else None)
-        images = 1 if reference is None else 2
-        model = self._vision_model
-        estimate = self._meter.llm_estimate(model, len(prompt) + 4 * IMAGE_TOKENS * images, VISION_MAX_TOKENS)
-        fields: dict[str, Any] = {"prompt": shorten(prompt), "images": images,
-                                  "refs": [reference.label] if reference is not None else []}
-        errors: list[str] = []
-        for attempt in range(1, VISION_ATTEMPTS + 1):
-            sent = messages
-            try:
-                metered = await with_retries(
-                    lambda: self._call(
-                        job, "vision",
-                        lambda: self._client.chat(model, sent, temperature=0.0, max_tokens=VISION_MAX_TOKENS),
-                        model=model, estimate=estimate, fields={**fields, "attempt": attempt},
-                        cost_of=lambda reply: self._meter.llm_cost(model, reply.input_tokens, reply.output_tokens),
-                    ),
-                    self._retry,
-                    sleep=self._sleep,
-                )
-            except CFError as exc:
-                if exc.category in STOPS or exc.category in UNREACHABLE:
-                    raise
-                return None, self._error_text(exc)
-            reply: LLMResult = metered.result
-            stop = finish_reason(reply)
-            report, errors = parse_vision(reply.text, finish_reason=stop)
-            self._log.write(
-                kind="vision", unit=job.unit_id, model=model, **fields, attempt=attempt,
-                latency_s=round(metered.latency_s, 2), ok=report is not None, errors=errors, finish_reason=stop,
-                input_tokens=reply.input_tokens, output_tokens=reply.output_tokens, billing="billed",
-                usd=metered.usd, neurons=reply.neurons, request_id=reply.request_id,
-            )
-            if report is not None:
-                return report, None
-            messages = retry_messages(messages, reply.text, errors)
-        return None, "invalid reply: " + "; ".join(errors[:3])
+    async def _check(self, job: RenderJob, image: Image.Image) -> QCResult:
+        return await self._calls.check(image, expected=job.expected, reference=job.vision_reference, unit=job.unit_id)
 
     def _finish(self, job: RenderJob, status: UnitStatus, current: int | None, error: str | None) -> None:
         """The final status, then the current copy images/<stem>.png. A kill between the two is put

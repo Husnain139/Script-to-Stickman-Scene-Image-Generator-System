@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 from typing import Literal
 
+from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
@@ -54,6 +56,21 @@ def load_library(workspace: Path) -> list[LibraryCharacter]:
 def anchor_ref_path(workspace: Path, style_version: int) -> Path:
     """The style anchor's reference copy (spec §2.2, §8.1)."""
     return workspace / "library" / "style" / f"anchor_v{style_version}_ref.png"
+
+
+def anchor_path(workspace: Path, style_version: int) -> Path:
+    """The approved style anchor, full size (spec §2.2, §8.1)."""
+    return workspace / "library" / "style" / f"anchor_v{style_version}.png"
+
+
+def reference_copy(image: Image.Image, max_side: int) -> bytes:
+    """A reference copy (spec §8.3): the longest side at most `max_side`, aspect ratio kept, PNG. The
+    source image is never altered, and a smaller image is not enlarged."""
+    copy = image.convert("RGB")
+    copy.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+    buffer = io.BytesIO()
+    copy.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def character_ref_path(workspace: Path, entry: LibraryCharacter) -> Path:

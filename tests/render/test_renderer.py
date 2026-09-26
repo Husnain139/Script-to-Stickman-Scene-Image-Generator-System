@@ -278,6 +278,60 @@ def test_bytes_that_are_not_an_image_fail_the_unit(tmp_path, plan_data, fake_ima
     assert run.store.unit("001").error.startswith("bad_image: ")
 
 
+def test_an_unreadable_image_is_made_again_next_run(tmp_path, plan_data, fake_images):
+    run = Run(tmp_path, plan_data, fake_images(), qc=QCSettings(vision=False))
+    run.go(run.jobs[:1])
+    unit = run.store.unit("001")
+    unit.versions[0].qc = None  # it still needs its check
+    run.store.save()
+    (run.project / unit.versions[0].file).write_bytes(b"not a png any more")
+    run.qc = QCSettings()
+    asyncio.run(run.make_renderer(fake_images()).run(run.jobs[:1]))
+    unit = run.store.unit("001")
+    assert (unit.status, unit.current_version) == ("failed", None)
+    assert unit.error.startswith("bad_image: can't read images/_history/001_v1.png")
+    assert not (run.project / "images" / "001_00-00.0.png").exists()
+    later = fake_images()
+    asyncio.run(run.make_renderer(later).run(run.jobs[:1]))
+    assert len(later.calls) == 1  # a new image, not the same failing check
+    unit = run.store.unit("001")
+    assert (unit.status, unit.current_version) == ("generated", 2)
+
+
+def test_an_os_error_elsewhere_in_the_check_fails_only_that_unit(tmp_path, plan_data, fake_images, monkeypatch):
+    from stickman.qc.pixel import pixel_check as real_pixel_check
+
+    run = Run(tmp_path, plan_data, fake_images(), qc=QCSettings(vision=False), concurrency=1)
+    run.go(run.jobs[:1])
+    unit = run.store.unit("001")
+    unit.versions[0].qc = None  # it still needs its check; its file reads fine
+    run.store.save()
+
+    calls = []
+
+    def flaky(image, settings):
+        calls.append(1)
+        if len(calls) == 1:  # only 001's re-check, which goes first with concurrency=1
+            raise OSError(28, "No space left on device")
+        return real_pixel_check(image, settings)
+
+    monkeypatch.setattr("stickman.render.calls.pixel_check", flaky)
+    result = asyncio.run(run.make_renderer(fake_images()).run(run.jobs))
+    assert result.stop is None  # the run finishes; the OSError doesn't abort the others
+    unit = StateStore.load(run.project).unit("001")
+    assert unit.status == "failed" and unit.current_version == 1 and [v.v for v in unit.versions] == [1]
+    assert unit.versions[0].qc is None  # stays unchecked, so the next run checks it again
+    assert unit.error.startswith("check failed: ")
+    assert (run.project / "images" / "001_00-00.0.png").exists()
+    assert run.statuses()["002a"] == "generated" and run.statuses()["002b"] == "generated"
+
+    later = fake_images()
+    asyncio.run(run.make_renderer(later).run(run.jobs[:1]))
+    assert later.calls == []  # the same image is checked again, no new image made
+    unit = StateStore.load(run.project).unit("001")
+    assert unit.status == "generated" and unit.current_version == 1
+
+
 def test_reference_images_are_sent_in_slot_order_and_recorded(tmp_path, plan_data, fake_images):
     for relative, size in (("library/style/anchor_v1_ref.png", (512, 384)), ("library/mascot/ref_v1.png", (384, 512))):
         path = tmp_path / relative
@@ -686,3 +740,20 @@ def test_a_blurred_image_is_softened_like_a_dark_one(tmp_path, plan_data, fake_i
     assert (v1.qc.reason, v1.qc.vision, v2.retry_reason) == ("safety_filtered", None, "safety_filtered")
     assert (unit.status, unit.current_version) == ("generated", 2)
     assert run.renderer.softened == ["001"]
+
+
+def test_a_rewrites_llm_calls_are_ledgered_under_its_unit(tmp_path, plan_data, fake_images, drawings, jpeg):
+    from stickman.cf.client import LLMResult
+
+    async def reply():
+        return LLMResult(text="{}", input_tokens=1, output_tokens=1, raw={}, neurons=2.0)
+
+    class MeteredRewriter(FakeRewriter):
+        async def soften(self, unit_id, notes, check=None):
+            await run.meter.run(reply, kind="llm", model="@cf/openai/gpt-oss-120b", estimate_usd=0.0)  # no unit given
+            return await super().soften(unit_id, notes, check)
+
+    run = Run(tmp_path, plan_data, fake_images([jpeg_of(drawings.all_black()), jpeg]), rewriter=MeteredRewriter(plan_data))
+    run.go(run.jobs[:1])
+    entries = [json.loads(line) for line in (tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [(e["kind"], e["unit"]) for e in entries if e["kind"] == "llm"] == [("llm", "001")]

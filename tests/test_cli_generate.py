@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 from stickman import cli
 from stickman.cf.errors import CFError, ErrorCategory
 from stickman.plan.models import parse_plan
-from stickman.plan.store import load_plan, to_document, update_unit, write_plan
+from stickman.plan.store import PlanChangedError, load_plan, to_document, update_unit, write_plan
 from stickman.render.rewrite import SOFTEN_PREFIX
 from stickman.render.state import StateStore
 
@@ -265,11 +265,27 @@ def test_images_made_before_qc_are_checked_without_a_new_image(workspace, monkey
     client = use_images(monkeypatch, fake_images())
     result = generate(workspace)
     assert result.exit_code == 0, result.output
-    assert ("Checking 1 image(s) made before QC existed. Each is checked, not made again, unless it fails "
-            "its check; then it is retried like any other.") in result.output
+    assert ("Checking 1 image(s) that have no check yet (made before QC, or left unchecked when the checker "
+            "couldn't be reached). Each is checked, not made again, unless it fails its check; then it is "
+            "retried like any other.") in result.output
     assert "retries not included" in result.output
     assert client.calls == [] and len(client.chat_calls) == 1
     assert json.loads(path.read_text(encoding="utf-8"))["units"]["001"]["versions"][0]["qc"]["passed"] is True
+
+
+def test_an_image_left_unchecked_by_a_vision_outage_is_counted_as_a_check(workspace, monkeypatch, fake_images):
+    outage = CFError(ErrorCategory.TRANSIENT, "bad gateway", status=502)
+    (workspace / "config").mkdir()
+    (workspace / "config" / "settings.yaml").write_text("retry:\n  transient_max: 0\n", encoding="utf-8")
+    use_images(monkeypatch, fake_images(chat=lambda model, messages: outage))
+    generate(workspace, "--limit", "1")
+    assert statuses(workspace)["001"] == "failed"
+    client = use_images(monkeypatch, fake_images())
+    result = generate(workspace, "--limit", "1")
+    assert result.exit_code == 0, result.output
+    assert "Checking 1 image(s) that have no check yet" in result.output
+    assert not any(row.startswith("Generating") for row in result.output.splitlines())
+    assert client.calls == [] and len(client.chat_calls) == 1
 
 
 def test_the_run_start_estimate_says_it_leaves_out_retries(workspace, monkeypatch, fake_images):
@@ -327,3 +343,55 @@ def test_turning_the_vision_check_off_leaves_the_pixel_checks(workspace, monkeyp
     assert "pixel checks only (qc.vision is off)" in result.output
     assert "so about 48 more unit(s) fit" in result.output
     assert client.chat_calls == [] and set(statuses(workspace).values()) == {"generated"}
+
+
+def anchor(workspace):
+    path = workspace / "library" / "style" / "anchor_v1_ref.png"
+    path.parent.mkdir(parents=True)
+    Image.new("RGB", (512, 384), "white").save(path, format="PNG")
+    return path.read_bytes()
+
+
+def test_generate_rebuilds_tool_built_prompts_once_the_anchor_exists(workspace, monkeypatch, fake_images, plan_data, built_prompts):
+    path = project(workspace) / "plan.yaml"
+    write_plan(path, to_document(parse_plan(built_prompts(plan_data))), expected_hash=None)
+    path.write_text("# my notes\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+    anchor_bytes = anchor(workspace)
+    client = use_images(monkeypatch, fake_images())
+    result = generate(workspace)
+    assert result.exit_code == 0, result.output
+    assert "Rebuilt the image prompts of 3 unit(s) for the reference images that now exist: 001, 002a, 002b" in result.output
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("# my notes\n") and text.count("Reference images: image 0 shows") == 3
+    assert all("Reference images: image 0 shows" in call["prompt"] for call in client.calls)
+    assert all(call["input_images"] == [anchor_bytes] for call in client.calls)
+    again = generate(workspace)
+    assert "Rebuilt the image prompts" not in again.output
+
+
+def test_plan_yaml_changing_during_the_prompt_rebuild_says_so(workspace, monkeypatch, fake_images, plan_data, built_prompts):
+    path = project(workspace) / "plan.yaml"
+    write_plan(path, to_document(parse_plan(built_prompts(plan_data))), expected_hash=None)
+    anchor(workspace)
+
+    def changed(*args, **kwargs):
+        raise PlanChangedError("plan.yaml changed")
+
+    monkeypatch.setattr(cli, "write_plan", changed)
+    client = use_images(monkeypatch, fake_images())
+    result = generate(workspace)
+    assert result.exit_code == 1, result.output
+    assert ("plan.yaml changed on disk while the prompts were being rebuilt. Nothing was written; run the command again."
+            in result.output)
+    assert "LLM" not in result.output and client.calls == []
+
+
+def test_hand_edited_prompts_are_left_as_they_are_with_a_warning(workspace, monkeypatch, fake_images):
+    anchor(workspace)
+    before = (project(workspace) / "plan.yaml").read_bytes()
+    client = use_images(monkeypatch, fake_images())
+    result = generate(workspace)
+    assert result.exit_code == 0, result.output
+    assert "so they were left as they are" in result.output and "001, 002a, 002b" in result.output
+    assert (project(workspace) / "plan.yaml").read_bytes() == before
+    assert client.calls[0]["prompt"] == "prompt for 001"

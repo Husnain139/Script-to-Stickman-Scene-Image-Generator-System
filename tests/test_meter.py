@@ -1,5 +1,6 @@
 import asyncio
 import itertools
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -8,7 +9,7 @@ from stickman.budget import Budget, BudgetExceeded
 from stickman.cf.client import ImageResult, LLMResult
 from stickman.cf.errors import CFError, ErrorCategory
 from stickman.ledger import Ledger
-from stickman.meter import Meter, billing_of
+from stickman.meter import Meter, billing_of, unit_scope
 from stickman.settings import BudgetSettings
 
 PK = timezone(timedelta(hours=5))
@@ -140,3 +141,21 @@ def test_a_cancelled_call_is_recorded_as_possibly_billed(tmp_path):
     assert (entry.billing, entry.est_usd, entry.unit) == ("possibly_billed", 0.0023, "006a")
     assert (meter.run_usd, meter.possibly_billed) == (0.0023, 1)
     assert (budget.spent, budget.in_flight) == (0.0023, 0)
+
+
+def test_calls_inside_a_unit_scope_are_ledgered_under_that_unit(tmp_path):
+    path = tmp_path / "ledger.jsonl"
+    meter = Meter(project="demo", ledger=Ledger(path))
+
+    async def reply():
+        return LLMResult(text="ok", input_tokens=1, output_tokens=1, raw={}, neurons=1.0)
+
+    async def go():
+        with unit_scope("006a"):
+            await meter.run(reply, kind="llm", model="m", estimate_usd=0.0)
+            await meter.run(reply, kind="llm", model="m", estimate_usd=0.0, unit="007")  # its own unit wins
+        await meter.run(reply, kind="llm", model="m", estimate_usd=0.0)
+
+    asyncio.run(go())
+    units = [json.loads(line)["unit"] for line in path.read_text(encoding="utf-8").splitlines()]
+    assert units == ["006a", "007", None]

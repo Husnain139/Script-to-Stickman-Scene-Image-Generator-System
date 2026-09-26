@@ -109,6 +109,8 @@ def _restore_current_images(store: StateStore, expected: Mapping[str, ExpectedUn
         unit = store.state.units[unit_id]
         version = unit.version(unit.current_version) if unit.current_version is not None else None
         if version is None:
+            # No version shows the unit's latest design (spec §5.2 [M4]): no current copy either.
+            (store.project_dir / "images" / f"{want.stem}.png").unlink(missing_ok=True)
             continue
         source = store.project_dir / version.file
         if not source.is_file():

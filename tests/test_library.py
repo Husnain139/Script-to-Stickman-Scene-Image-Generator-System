@@ -1,9 +1,11 @@
+import io
 from datetime import date
 
 import pytest
+from PIL import Image
 
 from stickman.config_files import load_mascot
-from stickman.library import find_references, load_library
+from stickman.library import anchor_path, find_references, load_library, reference_copy
 from stickman.plan.models import CastMember, MascotEntry
 from stickman.prompt.builder import ReferenceAvailability
 from stickman.settings import ConfigError
@@ -107,3 +109,20 @@ def test_an_entry_that_is_not_utf8_names_the_file(tmp_path):
     (directory / "character.yaml").write_bytes(text.encode("cp1252"))
     with pytest.raises(ConfigError, match=r"character\.yaml.*UTF-8"):
         load_library(tmp_path)
+
+
+def test_a_reference_copy_fits_the_limit_and_keeps_the_aspect_ratio():
+    source = Image.new("RGB", (1024, 768), "white")
+    data = reference_copy(source, 512)
+    with Image.open(io.BytesIO(data)) as copy:
+        assert (copy.format, copy.size) == ("PNG", (512, 384))
+    assert source.size == (1024, 768)  # the source is never altered
+
+
+def test_a_small_image_is_not_enlarged():
+    with Image.open(io.BytesIO(reference_copy(Image.new("L", (300, 200), 255), 512))) as copy:
+        assert (copy.size, copy.mode) == ((300, 200), "RGB")
+
+
+def test_the_anchor_lives_in_library_style(tmp_path):
+    assert anchor_path(tmp_path, 2) == tmp_path / "library" / "style" / "anchor_v2.png"

@@ -128,6 +128,8 @@ class TrialSettings(_Section):
 
 class BootstrapSettings(_Section):
     anchor_candidates: int = Field(4, ge=1)
+    mascot_candidates: int = Field(3, ge=1)
+    anchor_scene: Literal["two_figures", "one_figure"] = "two_figures"  # one_figure if the anchor leaks (spec §8.1)
     model: str = "@cf/black-forest-labs/flux-2-klein-9b"
 
 
