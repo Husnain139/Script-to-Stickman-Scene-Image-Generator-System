@@ -381,6 +381,8 @@ scenes:
 - While a unit's chain (its image, QC and retries) runs, it stays `generating`. Each retry is a new version whose `retry_of` points to the version it fixes. The chain runs from the current version back through `retry_of`.
 - A run stopped mid-chain (daily limit, budget, outage, Ctrl+C) leaves the unit `planned` with its versions. A killed one leaves it `generating`, which the next run resets to `planned`. Either way the next run continues the same chain. An image saved just before a kill is adopted with `qc: null` and checked.
 - A unit counts as needing work when it is `planned` or `failed`, or `generated` with a current version QC hasn't checked. That covers images made before M4.
+- A unit whose check couldn't reach the vision model is `failed` with its image unchecked (`qc: null`); the next run checks that image without a new one (§9.4).
+- A unit whose soften or redesign was written to `plan.yaml` but whose new image never came has `current_version: null`, so it never shows the old design. A refusal leaves it `needs_review`; an API error or unreadable bytes leave it `failed`, and the next run renders the new design afresh. Its old versions stay in `versions` and `_history`, and it isn't marked stale.
 
 ### 5.3 Character library entry (`library/characters/<id>/character.yaml`)
 ```yaml
@@ -689,6 +691,10 @@ the pose described above.
 - Without the mascot in reference slot 1, the `mascot_mismatch` sentence says "…exactly this head and hair: {identity}".
 - `safety_filtered` is softened once. The soften's `softened_reason` starts with `safety filter: `, and a later run reads that to know. `weak_idea`'s redesign is its second retry for that reason.
 - A soften or redesign reruns stage 3 for the unit (like `replan`) and writes `plan.yaml` hash-checked. If it fails, the unit becomes `needs_review` with the error.
+- The new image request is built from the rewritten unit before `plan.yaml` is written, so a rewrite whose request can't be made is never written.
+- A redesign of a unit QC already softened keeps `softened` and its `safety filter: ` reason, and its hint also asks to stay symbolic and tasteful.
+- No rewrite starts once the run is stopping (§9.5).
+- A refused request counts as an attempt toward `retry.qc_max`: with `qc_max: 0` it isn't softened, and the unit becomes `needs_review`.
 
 ---
 
@@ -755,7 +761,9 @@ JSON: {model, messages:[{role:system,…},{role:user,…}], temperature, max_tok
 **[M4] The call:**
 - One user message: the §11.2 prompt with its schema, the unit image as a PNG (RGB, at most 1024 px on the long side), then the mascot reference when one is sent. `temperature` is 0 and `max_tokens` 2048.
 - There are up to 2 validation attempts, the second with the errors fed back.
-- The daily limit or a rejected token stops the run. Any other failure (after the usual retries) sets `vision_error`, and the unit becomes `needs_review` without a new image.
+- The daily limit or a rejected token stops the run.
+- **The checker couldn't be reached** (`transient` or `rate_limited` after the usual retries): the version keeps no QC result (`qc: null`), and the unit becomes `failed` with the masked error. The next `generate`/`resume` checks the same image again, with no new image. Changed after the final review, at the user's decision (2026-09-25); it was `vision_error` before.
+- **The checker answered unusably** (an invalid reply after 2 attempts, `bad_request` or `refused`): the result is `vision_error`, and the unit becomes `needs_review` without a new image.
 - The mascot reference is the mascot's reference copy once bootstrap approved it. `mascot_mismatch` counts only when it was sent.
 - `qc.vision: false` turns the vision check off.
 
@@ -776,6 +784,8 @@ JSON: {model, messages:[{role:system,…},{role:user,…}], temperature, max_tok
 **Retry counts [M2]:** `retry.rate_limit_max` and `retry.transient_max` count retries after the first try.
 
 **[M3] What the breaker counts:** each API attempt that ends in a `transient` error, including attempts that are then retried. So with `transient_max: 3`, two units' failures can trip it. A `refused` request ends `failed` until M4 adds the softened retry (§7.5).
+
+**[M4] One count per kind of call:** the breaker keeps a count of temporary errors in a row for each kind of call: `image`, `vision` and `llm` (a soften's or redesign's planner calls). A success resets only its own kind's count, and any count reaching `retry.circuit_breaker` pauses the run. So an outage of the vision model trips it even while images succeed. Changed after the final review, at the user's decision (2026-09-25). Once the run is stopping, no soften or redesign starts either.
 
 ### 9.6 Cost estimates (`config/pricing.yaml`)
 These formulas are used only for **pre-call estimates** and for calls with no
@@ -956,8 +966,8 @@ Expected figures: {N} ({list of cast names with figure counts}).
 - **Honest limitation:** the vision model will sometimes miss small text or miscount limbs. The final gallery review is the real gate.
 
 **[M4]**
-- **Which version becomes current:** the best among the chain's versions made from the unit's latest fields (a soften changes them), so the current image never shows an old design.
-- **`vision_error`** (the checker gave no usable answer) fails without a retry, and ranks after every other reason.
+- **Which version becomes current:** the best among the chain's versions made from the unit's latest fields (a soften changes them), so the current image never shows an old design. When none was made from them, the unit has no current version (§5.2).
+- **`vision_error`** (the checker answered, but unusably; one it couldn't reach leaves the image unchecked, §9.4) fails without a retry, and ranks after every other reason.
 - **A refused image request** counts as `safety_filtered` with no image.
 
 ---
@@ -1141,7 +1151,7 @@ Cloudflare fixtures, generated images, neuron costs and the style verdict — is
 
 ## 16. Error handling summary
 
-- **API errors:** sorted into categories and handled per §9.5. The circuit breaker counts only `transient` errors.
+- **API errors:** sorted into categories and handled per §9.5. The circuit breaker counts only `transient` errors, per kind of call from M4 (§9.5).
 - **Timeouts:** recorded in the ledger as `possibly_billed`.
 - **Budget:** checked before every call (§9.7).
 - **Crashes:**
