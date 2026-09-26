@@ -56,6 +56,11 @@ def test_the_mascot_fix_points_at_image_1_when_the_mascot_is_there():
         MASCOT_FIX.format(identity="round head, three hair strokes curling right"))
 
 
+def test_one_expected_figure_is_singular():
+    prompt = retry_prompt(BASE, ["character_count"], fix(expected=ExpectedPicture("A man.", 1, "Everyman: 1")))
+    assert prompt.endswith("Exactly 1 stick figure in total: Everyman: 1.")
+
+
 def test_no_expected_figures_asks_for_none():
     prompt = retry_prompt(BASE, ["character_count"], fix(expected=ExpectedPicture("A clock.", 0, "none")))
     assert prompt.endswith("No stick figures at all.")

@@ -12,7 +12,7 @@ from stickman.qc.vision import ExpectedPicture
 BACKGROUND_FIX = "The entire background is plain white. Do not fill or darken the sky or the ground."
 STYLE_FIX = "Pure black ink lines on pure white. Flat. No colour, no grey, no shading, not realistic."
 ANATOMY_FIX = "Each character has exactly one head, two arms and two legs."
-COUNT_FIX = "Exactly {figures} stick figures in total: {cast}."
+COUNT_FIX = "Exactly {figures} stick {noun} in total: {cast}."
 NO_FIGURES_FIX = "No stick figures at all."
 MASCOT_FIX = "The main character must have exactly the same head and hair as image 1: {identity}."
 MASCOT_FIX_NO_REF = "The main character must have exactly this head and hair: {identity}."
@@ -66,7 +66,8 @@ def _sentence(reason: str, fix: FixContext) -> str | None:
     if reason == "character_count":
         if fix.expected.figures == 0:
             return NO_FIGURES_FIX
-        return COUNT_FIX.format(figures=fix.expected.figures, cast=fix.expected.cast)
+        noun = "figure" if fix.expected.figures == 1 else "figures"
+        return COUNT_FIX.format(figures=fix.expected.figures, noun=noun, cast=fix.expected.cast)
     if reason == "mascot_mismatch":
         return (MASCOT_FIX if fix.mascot_in_image_1 else MASCOT_FIX_NO_REF).format(identity=fix.identity)
     return None  # empty, weak_idea and safety_filtered: a new seed or an LLM rewrite, no prompt change
