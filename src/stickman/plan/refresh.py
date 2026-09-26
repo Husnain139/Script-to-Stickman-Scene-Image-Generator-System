@@ -10,12 +10,14 @@ never touched. Because the tool writes the rebuilt text, M7's lock detection nev
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from stickman.config_files import MascotConfig, StyleConfig
 from stickman.plan.cast import cast_infos
 from stickman.plan.models import Plan
+from stickman.plan.store import LoadedPlan, update_unit, write_plan
 from stickman.prompt.builder import REFERENCE_INTRO, ReferenceAvailability, build_prompt
 
 # The builder writes the paragraph as one line after a blank line: the intro, then one sentence per slot.
@@ -50,6 +52,28 @@ def refresh_prompts(
         elif slots is not None:
             hand_edited.append(unit.id)
     return PromptRefresh(rebuilt, hand_edited)
+
+
+def refresh_plan_file(
+    path: Path,
+    loaded: LoadedPlan,
+    *,
+    style: StyleConfig,
+    mascot: MascotConfig,
+    references: ReferenceAvailability,
+    write: Callable[..., str] = write_plan,
+) -> tuple[Plan, PromptRefresh, str | None]:
+    """refresh_prompts, with the rebuilt prompts written to plan.yaml hash-checked (comments kept). Returns the
+    plan as it now is, the refresh, and the new file hash, None when nothing was written. PlanChangedError when
+    plan.yaml changed on disk since `loaded` was read; nothing is written then. `write`: write_plan, or the
+    caller's own reference to it (the CLI passes its module's, which its tests replace)."""
+    refresh = refresh_prompts(loaded.plan, style=style, mascot=mascot, references=references)
+    if not refresh.rebuilt:
+        return loaded.plan, refresh, None
+    for unit_id, prompt in refresh.rebuilt.items():
+        update_unit(loaded.doc, unit_id, {"image_prompt": prompt})
+    new_hash = write(path, loaded.doc, expected_hash=loaded.hash)
+    return with_prompts(loaded.plan, refresh.rebuilt), refresh, new_hash
 
 
 def with_prompts(plan: Plan, prompts: Mapping[str, str]) -> Plan:

@@ -34,6 +34,7 @@ from stickman.render.references import RefImage, ReferenceFiles
 from stickman.render.renderer import RunResult
 from stickman.settings import Settings
 
+BOOTSTRAP_PROJECT = "bootstrap"  # the ledger's project for bootstrap calls
 LEDGER_KIND: dict[Step, Kind] = {"anchor": "anchor", "mascot": "sheet"}
 
 

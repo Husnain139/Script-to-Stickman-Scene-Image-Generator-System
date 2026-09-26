@@ -19,7 +19,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, T
 from ruamel.yaml.comments import CommentedMap
 
 from stickman.bootstrap.approve import ApprovalError, approve_anchor, approve_mascot, mascot_version_mismatch
-from stickman.bootstrap.generate import CandidateJob, CandidateMaker, StepPlan, step_plan
+from stickman.bootstrap.generate import BOOTSTRAP_PROJECT, CandidateJob, CandidateMaker, StepPlan, step_plan
 from stickman.bootstrap.store import (
     BootstrapError,
     BootstrapStore,
@@ -62,7 +62,7 @@ from stickman.plan.planner import (
     plan_script,
     replan_unit,
 )
-from stickman.plan.refresh import refresh_prompts, with_prompts
+from stickman.plan.refresh import refresh_plan_file
 from stickman.plan.store import LoadedPlan, PlanChangedError, load_plan, to_document, update_unit, write_plan
 from stickman.pricing import PricingConfig, format_usd, load_pricing, usd_neurons
 from stickman.project import ProjectError, check_unplanned, choose_project_dir, create_project, resolve_project, slugify
@@ -396,7 +396,6 @@ def resume(
     _generate(workspace, project, force=force, limit=limit)
 
 
-BOOTSTRAP_PROJECT = "bootstrap"  # the ledger's project for bootstrap calls
 STEP_NAMES: dict[str, str] = {"anchor": "style anchor", "mascot": "mascot sheet"}
 
 
@@ -761,20 +760,24 @@ def _refresh_prompts(path: Path, ctx: RenderContext, loaded: LoadedPlan) -> Plan
         ctx.workspace, use_references=ctx.settings.image.use_references, style_version=plan.style_version,
         mascot=ctx.mascot, cast=plan.cast, library=ctx.library,
     )
-    refresh = refresh_prompts(plan, style=ctx.style, mascot=ctx.mascot, references=references)
+    try:
+        plan, refresh, _ = refresh_plan_file(path, loaded, style=ctx.style, mascot=ctx.mascot, references=references,
+                                             write=write_plan)
+    except PlanChangedError:
+        _fail(f"{path.name} changed on disk while the prompts were being rebuilt. Nothing was written; run the command again.",
+              EXIT_USER_ERROR)
+    except PlanValidationError as exc:
+        _fail(f"{path.name} was not written: the result failed validation (a bug): " + "; ".join(exc.errors[:5]), EXIT_USER_ERROR)
+    except OSError as exc:
+        _fail(f"Can't write {path}: {exc}. Nothing was generated; run the command again.", EXIT_USER_ERROR)
     if refresh.hand_edited:
         console.print(f"[yellow]{escape(HAND_EDITED_NOTE + ', '.join(refresh.hand_edited))}[/yellow]")
-    if not refresh.rebuilt:
-        return plan
-    for unit_id, prompt in refresh.rebuilt.items():
-        update_unit(loaded.doc, unit_id, {"image_prompt": prompt})
-    _write_plan(path, loaded.doc, expected_hash=loaded.hash, again=" Nothing was generated; run the command again.",
-                during="the prompts were being rebuilt")
-    console.print(escape(
-        f"Rebuilt the image prompts of {len(refresh.rebuilt)} unit(s) for the reference images that now exist: "
-        + ", ".join(refresh.rebuilt)
-    ))
-    return with_prompts(plan, refresh.rebuilt)
+    if refresh.rebuilt:
+        console.print(escape(
+            f"Rebuilt the image prompts of {len(refresh.rebuilt)} unit(s) for the reference images that now exist: "
+            + ", ".join(refresh.rebuilt)
+        ))
+    return plan
 
 
 def _generate(workspace: Path, project: Path | None, *, force: bool, limit: int | None) -> None:

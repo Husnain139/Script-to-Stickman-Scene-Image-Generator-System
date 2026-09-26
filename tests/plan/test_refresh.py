@@ -1,3 +1,5 @@
+import pytest
+
 from stickman.config_files import load_mascot, load_style
 from stickman.plan.cast import cast_infos
 from stickman.plan.models import parse_plan
@@ -70,3 +72,23 @@ def test_with_prompts_replaces_only_the_given_units(plan_data):
     changed = with_prompts(plan, {"002a": "new prompt"})
     assert [unit.image_prompt for unit in changed.units()] == ["prompt for 001", "new prompt", "prompt for 002b"]
     assert [unit.image_prompt for unit in plan.units()] == ["prompt for 001", "prompt for 002a", "prompt for 002b"]
+
+
+def test_refresh_plan_file_writes_the_rebuilt_prompts_hash_checked(tmp_path, plan_data, built_prompts):
+    from stickman.plan.refresh import refresh_plan_file
+    from stickman.plan.store import PlanChangedError, load_plan, to_document, write_plan
+
+    path = tmp_path / "plan.yaml"
+    write_plan(path, to_document(parse_plan(built_prompts(plan_data))), expected_hash=None)
+    loaded = load_plan(path)
+    plan, result, new_hash = refresh_plan_file(path, loaded, style=load_style(tmp_path), mascot=load_mascot(tmp_path),
+                                               references=ANCHOR_AND_MASCOT)
+    assert list(result.rebuilt) == ["001", "002a", "002b"] and new_hash == load_plan(path).hash
+    assert all("Reference images:" in unit.image_prompt for unit in plan.units())
+    again = load_plan(path)
+    assert refresh_plan_file(path, again, style=load_style(tmp_path), mascot=load_mascot(tmp_path),
+                             references=ANCHOR_AND_MASCOT)[2] is None  # nothing to rebuild, nothing written
+    stale = load_plan(path)
+    path.write_text(path.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
+    with pytest.raises(PlanChangedError):
+        refresh_plan_file(path, stale, style=load_style(tmp_path), mascot=load_mascot(tmp_path), references=NONE)
