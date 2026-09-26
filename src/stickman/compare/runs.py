@@ -14,7 +14,7 @@ from stickman.compare.setup import RUNS_DIR, CompareRun, CompareSetup
 from stickman.library import find_references
 from stickman.meter import Meter
 from stickman.plan.models import Plan
-from stickman.plan.refresh import refresh_prompts, with_prompts
+from stickman.plan.refresh import refresh_prompts, with_prompts, with_unit_fields
 from stickman.render.jobs import JobBuilder, RenderContext, RenderJob
 from stickman.render.recovery import recover
 from stickman.render.renderer import Renderer, RenderClient, RunControl, RunResult
@@ -38,13 +38,14 @@ class PreparedRun:
     store: StateStore
     builder: JobBuilder
     jobs: list[RenderJob]  # the picked units that still need work
-    notes: list[str]  # what recover() put right
+    notes: list[str]  # what recover() put right, and the hand-edited prompts sent as they are
     settings: Settings
 
 
 def prepare_run(compare_folder: Path, setup: CompareSetup, plan: Plan, run: CompareRun, base: RenderContext) -> PreparedRun:
     """The run's plan is the frozen plan on the run's model, with the tool-built prompts rebuilt in memory
-    for the run's reference images (spec §7.4 [M5])."""
+    for the run's reference images (spec §7.4 [M5]), and each picked unit's seed set to its pick's seed,
+    the same in every run."""
     settings = run_settings(base.settings, run, plan.aspect)
     ctx = dataclasses.replace(base, settings=settings)
     references = find_references(
@@ -52,7 +53,8 @@ def prepare_run(compare_folder: Path, setup: CompareSetup, plan: Plan, run: Comp
         cast=plan.cast, library=ctx.library,
     )
     refresh = refresh_prompts(plan, style=ctx.style, mascot=ctx.mascot, references=references)
-    run_plan = with_prompts(plan, refresh.rebuilt).model_copy(update={"image_model": run.model})
+    seeds = {pick.unit: {"seed": pick.seed} for pick in setup.picks}
+    run_plan = with_unit_fields(with_prompts(plan, refresh.rebuilt), seeds).model_copy(update={"image_model": run.model})
     builder = JobBuilder(ctx, run_plan)
     folder = compare_folder / RUNS_DIR / run.id
     folder.mkdir(parents=True, exist_ok=True)
@@ -60,6 +62,9 @@ def prepare_run(compare_folder: Path, setup: CompareSetup, plan: Plan, run: Comp
     picked = {pick.unit for pick in setup.picks}
     expected = {unit_id: want for unit_id, want in builder.expected().items() if unit_id in picked}
     notes = recover(store, expected)
+    hand_edited = [unit_id for unit_id in refresh.hand_edited if unit_id in picked]
+    if hand_edited:
+        notes.append(f"hand-edited prompts sent as they are: {', '.join(hand_edited)}")
     units = [unit for unit in run_plan.units() if unit.id in picked and needs_work(store.unit(unit.id))]
     return PreparedRun(run, folder, store, builder, builder.jobs(units), notes, settings)
 

@@ -53,11 +53,16 @@ def refresh_prompts(
 
 
 def with_prompts(plan: Plan, prompts: Mapping[str, str]) -> Plan:
-    if not prompts:
+    return with_unit_fields(plan, {unit_id: {"image_prompt": prompt} for unit_id, prompt in prompts.items()})
+
+
+def with_unit_fields(plan: Plan, fields: Mapping[str, Mapping[str, object]]) -> Plan:
+    """The plan in memory with these units' fields changed (unit id -> field -> value)."""
+    if not fields:
         return plan
     scenes = [
         scene.model_copy(update={"units": [
-            unit.model_copy(update={"image_prompt": prompts[unit.id]}) if unit.id in prompts else unit
+            unit.model_copy(update=dict(fields[unit.id])) if unit.id in fields else unit
             for unit in scene.units
         ]})
         for scene in plan.scenes

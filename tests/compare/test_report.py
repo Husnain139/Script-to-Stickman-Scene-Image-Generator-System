@@ -15,8 +15,9 @@ PK = timezone(timedelta(hours=5))
 KLEIN_4B = "@cf/black-forest-labs/flux-2-klein-4b"
 SETUP = CompareSetup(
     source="2026-09-25_demo", created=datetime(2026, 9, 26, 9, 0, tzinfo=PK),
-    picks=[ComparePick(category="mascot", unit="001"), ComparePick(category="extras", unit="002a", filled=True),
-           ComparePick(category="night_or_fire", unit="002b", filled=True)],
+    picks=[ComparePick(category="mascot", unit="001", seed=1),
+           ComparePick(category="extras", unit="002a", filled=True, seed=2),
+           ComparePick(category="night_or_fire", unit="002b", filled=True, seed=3)],
     runs=default_runs(Settings(), "16:9"),
 )
 

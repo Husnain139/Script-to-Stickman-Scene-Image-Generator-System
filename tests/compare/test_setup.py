@@ -1,6 +1,8 @@
+import os
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from pydantic import ValidationError
 
 from stickman.compare.setup import (
     CompareError,
@@ -27,9 +29,9 @@ def source_project(workspace, plan_data, name="2026-09-25_demo"):
     return folder
 
 
-def setup_for(source):
-    return CompareSetup(source=source.name, created=datetime(2026, 9, 26, 9, 0, tzinfo=PK),
-                        picks=[ComparePick(category="mascot", unit="001")], runs=default_runs(Settings(), "16:9"))
+def setup_for(source, *, hour=9):
+    return CompareSetup(source=source.name, created=datetime(2026, 9, 26, hour, 0, tzinfo=PK),
+                        picks=[ComparePick(category="mascot", unit="001", seed=11)], runs=default_runs(Settings(), "16:9"))
 
 
 def test_the_default_runs_are_klein_4b_with_and_without_references_and_small():
@@ -72,6 +74,22 @@ def test_creating_a_comparison_in_a_folder_that_exists_is_refused(tmp_path, plan
     with pytest.raises(FileExistsError):
         create_compare(folder, source, setup_for(source))
     assert list(folder.iterdir()) == []
+
+
+def test_the_newest_comparison_is_chosen_by_when_it_was_created_not_by_folder_time(tmp_path, plan_data):
+    source = source_project(tmp_path, plan_data)
+    first = compare_dir(tmp_path, source, date(2026, 9, 26))
+    create_compare(first, source, setup_for(source, hour=11))
+    second = compare_dir(tmp_path, source, date(2026, 9, 26))
+    create_compare(second, source, setup_for(source, hour=10))
+    os.utime(first, (1_000_000, 1_000_000))
+    os.utime(second, (2_000_000, 2_000_000))
+    assert find_compare(tmp_path, source) == first
+
+
+def test_a_pick_needs_its_seed():
+    with pytest.raises(ValidationError):
+        ComparePick(category="mascot", unit="001")
 
 
 def test_comparisons_of_other_projects_are_not_found(tmp_path, plan_data):

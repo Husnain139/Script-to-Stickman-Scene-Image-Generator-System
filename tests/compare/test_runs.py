@@ -22,13 +22,15 @@ async def no_sleep(seconds):
     return None
 
 
-def make_compare(tmp_path, plan_data, built_prompts, bootstrapped):
+def make_compare(tmp_path, plan_data, built_prompts, bootstrapped, *, built=True):
     bootstrapped(tmp_path)
     source = tmp_path / "projects" / "2026-09-25_demo"
     source.mkdir(parents=True)
-    write_plan(source / "plan.yaml", to_document(parse_plan(built_prompts(plan_data))), expected_hash=None)
+    data = built_prompts(plan_data) if built else plan_data
+    write_plan(source / "plan.yaml", to_document(parse_plan(data)), expected_hash=None)
     plan = parse_plan(plan_data)
-    picks = [ComparePick(category=p.category, unit=p.unit_id, filled=p.filled)
+    seeds = iter(range(7000, 7100))
+    picks = [ComparePick(category=p.category, unit=p.unit_id, filled=p.filled, seed=next(seeds))
              for p in pick_compare_units(plan, {"mascot": 1, "caveman_group": 3})]
     setup = CompareSetup(source=source.name, created=datetime(2026, 9, 26, 9, 0, tzinfo=PK), picks=picks,
                          runs=default_runs(Settings(), "16:9"))
@@ -96,3 +98,26 @@ def test_a_paused_comparison_continues_where_it_stopped(tmp_path, plan_data, bui
     assert total == 9  # no lost and no duplicate images
     assert all(set(statuses(folder, run_id).values()) == {"generated"}
                for run_id in ("klein-4b-refs", "klein-4b-no-refs", "klein-4b-small-refs"))
+
+
+def test_each_run_sends_a_picked_unit_with_its_picks_seed(tmp_path, plan_data, built_prompts, bootstrapped, fake_images):
+    folder = make_compare(tmp_path, plan_data, built_prompts, bootstrapped)
+    client = fake_images()
+    render(tmp_path, prepare_all(tmp_path, folder), client)
+    setup, _ = load_compare(folder, library_ids=set())
+    seeds = {pick.unit: pick.seed for pick in setup.picks}
+    sent = {}
+    for call in client.calls:
+        unit = next(u for u in seeds if f"Idea {u}." in call["prompt"])
+        sent.setdefault(unit, []).append(call["seed"])
+    assert sent == {unit: [seed] * 3 for unit, seed in seeds.items()}
+
+
+def test_hand_edited_prompts_are_noted_for_each_run_that_sends_references(
+    tmp_path, plan_data, built_prompts, bootstrapped
+):
+    folder = make_compare(tmp_path, plan_data, built_prompts, bootstrapped, built=False)
+    notes = {run.run.id: run.notes for run in prepare_all(tmp_path, folder)}
+    assert notes["klein-4b-refs"] == ["hand-edited prompts sent as they are: 001, 002a, 002b"]
+    assert notes["klein-4b-small-refs"] == ["hand-edited prompts sent as they are: 001, 002a, 002b"]
+    assert notes["klein-4b-no-refs"] == []

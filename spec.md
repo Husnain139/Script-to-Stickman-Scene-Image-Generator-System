@@ -1150,8 +1150,9 @@ Exit codes: `0` success; `1` user or validation error; `2` a pause (budget, dail
 - **Runs:** Klein 4B only, as `klein-4b-refs` (the project's size, with references), `klein-4b-no-refs` (no references) and `klein-4b-small-refs` (1280×720 or 720×1280, with references — plan.md's small-size candidate). Klein 9B is left out: about 22k neurons, and commercial use of its output is unconfirmed (§15 #10).
 - **Folder:** `projects/<date>_compare_<source slug>/` with `compare.json`, `source_plan.yaml` (a frozen copy), `runs/<run id>/` (state, images, logs) and `export/compare.html`. There's no `plan.yaml` at the top, so it's never taken for a project.
 - **No QC retries** (`retry.qc_max: 0`): the report measures first images. Each run is rendered by the normal renderer, so a daily-limit pause continues on the next run.
+- **Seeds:** Each picked unit gets one seed, stored in `compare.json` and used in every run, so the runs differ only in model, size and references.
 - **Extras** have no sheets until M7, so they appear in the text only.
-- **Report:** per run, images, QC pass rate, no-text failure rate (images where the vision model saw text), `character_count` failures, median and 90th-percentile time, and cost per image in USD and neurons; plus a suggested `render.timeout_s` (3 × p90, rounded up to 10 s, at least 30) and `render.est_seconds_per_image` (the median). The same numbers are printed on the console.
+- **Report:** per run, images, refusals (requests refused with no image, counted as failed first tries), QC pass rate, no-text failure rate (images where the vision model saw text), `character_count` failures (from the vision report, whatever the QC reason shown), median and 90th-percentile time, and cost per image in USD and neurons; plus a suggested `render.timeout_s` (3 × p90, rounded up to 10 s, at least 30) and `render.est_seconds_per_image` (the median). The same numbers are printed on the console.
 
 ---
 

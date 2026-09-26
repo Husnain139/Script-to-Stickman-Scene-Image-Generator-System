@@ -11,7 +11,7 @@ There is no plan.yaml at the top, so resolve_project never takes the folder for 
 from __future__ import annotations
 
 from collections.abc import Collection
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -50,6 +50,7 @@ class ComparePick(_Model):
     category: str
     unit: str
     filled: bool = False
+    seed: int = Field(ge=0)  # the unit's seed in every run, so the runs differ only in model, size and references
 
 
 class CompareSetup(_Model):
@@ -91,9 +92,10 @@ def _read_setup(folder: Path) -> CompareSetup:
 
 
 def find_compare(workspace: Path, source: Path) -> Path | None:
-    """The newest comparison of this source project."""
+    """The newest comparison of this source project: by compare.json's `created`, then by folder name
+    (a folder's mtime changes whenever a file is added to it)."""
     projects = workspace / "projects"
-    found: list[Path] = []
+    found: list[tuple[datetime, str, Path]] = []
     if projects.is_dir():
         for folder in projects.glob("*_compare_*"):
             if not (folder / COMPARE_FILE).is_file():
@@ -103,8 +105,8 @@ def find_compare(workspace: Path, source: Path) -> Path | None:
             except CompareError:
                 continue
             if setup.source == source.name:
-                found.append(folder)
-    return max(found, key=lambda folder: (folder.stat().st_mtime, folder.name)) if found else None
+                found.append((setup.created, folder.name, folder))
+    return max(found, key=lambda item: item[:2])[2] if found else None
 
 
 def create_compare(folder: Path, source: Path, setup: CompareSetup) -> None:

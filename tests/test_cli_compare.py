@@ -105,6 +105,35 @@ def test_a_folder_another_run_created_first_is_a_clean_error(workspace, monkeypa
     assert client.calls == [] and list((workspace / "projects" / COMPARE).iterdir()) == []
 
 
+def test_the_estimate_counts_only_the_check_for_an_image_that_needs_only_a_check(
+    workspace, monkeypatch, fake_images, bootstrapped
+):
+    bootstrapped(workspace)
+    (workspace / "config" / "settings.yaml").write_text("retry:\n  transient_max: 0\n  circuit_breaker: 50\n", encoding="utf-8")
+    outage = CFError(ErrorCategory.TRANSIENT, "bad gateway", status=502)
+    use_images(monkeypatch, fake_images(chat=lambda model, messages: outage))
+    compare(workspace, "--yes")  # nine images, none checked: the checker couldn't be reached
+    monkeypatch.setattr(cli, "_check_usd", lambda cfg, pricing: 0.001)
+    client = use_images(monkeypatch, fake_images())
+    result = compare(workspace, "--yes")
+    assert result.exit_code == 0, result.output
+    assert "≈ $0.0090 (≈" in result.output  # nine checks, no image
+    assert client.calls == [] and len(client.chat_calls) == 9
+
+
+def test_every_run_renders_a_unit_with_the_same_seed(workspace, monkeypatch, fake_images, bootstrapped):
+    bootstrapped(workspace)
+    client = use_images(monkeypatch, fake_images())
+    compare(workspace, "--yes")
+    setup = json.loads((workspace / "projects" / COMPARE / "compare.json").read_text(encoding="utf-8"))
+    seeds = {pick["unit"]: pick["seed"] for pick in setup["picks"]}
+    by_unit = {}
+    for call in client.calls:
+        unit = next(u for u in seeds if f"Idea {u}" in call["prompt"] or f"prompt for {u}" in call["prompt"])
+        by_unit.setdefault(unit, set()).add(call["seed"])
+    assert by_unit == {unit: {seed} for unit, seed in seeds.items()}
+
+
 def test_it_asks_before_spending(workspace, monkeypatch, fake_images, bootstrapped):
     bootstrapped(workspace)
     client = use_images(monkeypatch, fake_images())

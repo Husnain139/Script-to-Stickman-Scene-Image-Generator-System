@@ -70,7 +70,7 @@ from stickman.project import ProjectError, check_unplanned, choose_project_dir, 
 from stickman.qc.vision import TYPICAL_TOKENS
 from stickman.render.calls import Calls
 from stickman.render.chain import chain_of
-from stickman.render.jobs import JobBuilder, JobError, RenderContext, RenderJob
+from stickman.render.jobs import JobBuilder, JobError, RenderContext, RenderJob, random_seed
 from stickman.render.lock import LockHeld, ProjectLock
 from stickman.render.recovery import recover
 from stickman.render.references import ReferenceFiles
@@ -673,7 +673,7 @@ def _create_compare(source: Path, folder: Path, ctx: RenderContext) -> None:
     picks = pick_compare_units(plan, figures)
     setup = CompareSetup(
         source=source.name, created=datetime.now().astimezone(),
-        picks=[ComparePick(category=p.category, unit=p.unit_id, filled=p.filled) for p in picks],
+        picks=[ComparePick(category=p.category, unit=p.unit_id, filled=p.filled, seed=random_seed()) for p in picks],
         runs=default_runs(ctx.settings, plan.aspect),
     )
     try:
@@ -708,7 +708,12 @@ def _compare_locked(
     if jobs:
         ledger = Ledger(cfg.workspace / LEDGER_FILE)
         now = datetime.now().astimezone()
-        estimate = sum(job.estimate_usd for job in jobs) + _check_usd(cfg, ctx.pricing) * len(jobs)
+        # A job whose image is made but unchecked costs only its check (the same rule as generate's estimate).
+        to_make = []
+        for run in prepared:
+            check_only = _check_only(run.store, run.jobs)
+            to_make += [job for job in run.jobs if job.unit_id not in check_only]
+        estimate = sum(job.estimate_usd for job in to_make) + _check_usd(cfg, ctx.pricing) * len(jobs)
         how = f", each checked by {cfg.settings.llm.vision_model}" if cfg.settings.qc.vision else ", pixel checks only"
         per_run = ", ".join(f"{run.run.id} {len(run.jobs)}" for run in prepared if run.jobs)
         console.print(escape(
