@@ -67,10 +67,10 @@ def test_selecting_a_version(tmp_path):
     store = StateStore.load(tmp_path)
     store.add_version("001", version("001", 1), status="generated")
     store.add_version("001", version("001", 2), status="generated")
-    select_version(store, "001", 1, unit_ids=IDS)
+    select_version(store, "001", 1, unit_ids=IDS, stem="001_00-00.0")
     assert store.unit("001").current_version == 1
     with pytest.raises(ActionError) as error:
-        select_version(store, "001", 9, unit_ids=IDS)
+        select_version(store, "001", 9, unit_ids=IDS, stem="001_00-00.0")
     assert status_of(error) == 404
 
 
@@ -150,3 +150,15 @@ def test_extras_sheets_come_later_and_unknown_candidates_are_refused(tmp_path):
     with pytest.raises(ActionError) as error:
         approve_sheet(tmp_path, "anchor", 3, **kwargs)
     assert status_of(error) == 409 and "no anchor candidate 3" in error.value.message
+
+
+def test_selecting_a_version_makes_it_the_current_copy_in_images(tmp_path):
+    store = StateStore.load(tmp_path)
+    (tmp_path / "images" / "_history").mkdir(parents=True)
+    for v in (1, 2):
+        (tmp_path / version("001", v).file).write_bytes(f"version {v}".encode())
+        store.add_version("001", version("001", v), status="generated")
+    copy = tmp_path / "images" / "001_00-00.0.png"
+    copy.write_bytes(b"version 2")
+    select_version(store, "001", 1, unit_ids=IDS, stem="001_00-00.0")
+    assert copy.read_bytes() == b"version 1"

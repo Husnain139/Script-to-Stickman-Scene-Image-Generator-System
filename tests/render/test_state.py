@@ -5,7 +5,15 @@ import pytest
 
 from stickman.qc.decide import decide
 from stickman.qc.pixel import PixelResult
-from stickman.render.state import ProjectState, StateError, StateStore, Version, needs_work, unchecked
+from stickman.render.state import (
+    ProjectState,
+    StateError,
+    StateStore,
+    Version,
+    needs_work,
+    unchecked,
+    write_current_copy,
+)
 
 PK = timezone(timedelta(hours=5))
 KLEIN_4B = "@cf/black-forest-labs/flux-2-klein-4b"
@@ -175,3 +183,19 @@ def test_choosing_an_unknown_version_is_refused(tmp_path):
 def test_an_older_state_json_without_compare_with_still_loads(tmp_path):
     (tmp_path / "state.json").write_text('{"schema_version": 1, "units": {"001": {"status": "planned"}}}', encoding="utf-8")
     assert StateStore.load(tmp_path).unit("001").compare_with is None
+
+
+def test_the_current_copy_is_the_current_versions_file_and_goes_when_there_is_none(tmp_path):
+    history = tmp_path / "images" / "_history"
+    history.mkdir(parents=True)
+    (history / "001_v1.png").write_bytes(b"one")
+    (history / "001_v2.png").write_bytes(b"two")
+    copy = tmp_path / "images" / "001_00-00.0.png"
+    assert write_current_copy(tmp_path, "001_00-00.0", "images/_history/001_v2.png")
+    assert copy.read_bytes() == b"two"
+    assert write_current_copy(tmp_path, "001_00-00.0", "images/_history/001_v1.png")
+    assert copy.read_bytes() == b"one"
+    assert not write_current_copy(tmp_path, "001_00-00.0", "images/_history/001_v9.png")  # missing: left as it is
+    assert copy.read_bytes() == b"one"
+    assert write_current_copy(tmp_path, "001_00-00.0", None)
+    assert not copy.exists()

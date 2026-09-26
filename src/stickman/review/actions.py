@@ -11,7 +11,7 @@ from stickman.bootstrap.store import BootstrapError, BootstrapStore, bootstrap_f
 from stickman.config_files import MascotConfig, StyleConfig
 from stickman.plan.models import PlanValidationError
 from stickman.plan.store import PlanChangedError, load_plan, update_unit, write_plan
-from stickman.render.state import StateStore
+from stickman.render.state import StateStore, write_current_copy
 from stickman.review.access import Busy, ProjectAccess
 from stickman.settings import ConfigError, Settings
 
@@ -53,13 +53,16 @@ def approve_remaining(store: StateStore, statuses: Mapping[str, str], *, busy: s
 
 
 def select_version(
-    store: StateStore, unit_id: str, v: int, *, unit_ids: Collection[str], busy: str | None = None
+    store: StateStore, unit_id: str, v: int, *, unit_ids: Collection[str], stem: str, busy: str | None = None
 ) -> None:
+    """Version v becomes current, and images/<stem>.png its copy (spec §3)."""
     _unit(unit_id, unit_ids, busy)
     try:
         store.select_version(unit_id, v)
     except KeyError:
         raise ActionError(404, f"{unit_id} has no version {v}.") from None
+    version = store.unit(unit_id).version(v)
+    write_current_copy(store.project_dir, stem, version.file if version is not None else None)
 
 
 def approve_plan(store: StateStore, errors: Sequence[str]) -> None:

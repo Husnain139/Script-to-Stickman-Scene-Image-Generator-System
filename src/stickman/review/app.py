@@ -288,9 +288,10 @@ def create_app(
 
     @app.post("/api/units/{unit_id}/select-version")
     async def unit_select(unit_id: str, body: VersionBody) -> dict[str, Any]:
-        ids = unit_ids()
+        stems = {unit["id"]: unit["stem"] for unit in view()["units"]}  # image_stem(unit.id, unit.start)
         with access.state() as store:
-            select_version(store, unit_id, body.v, unit_ids=ids, busy=access.busy_unit)
+            select_version(store, unit_id, body.v, unit_ids=stems, stem=stems.get(unit_id, ""),
+                           busy=access.busy_unit)
         return changed()
 
     @app.post("/api/units/{unit_id}/regenerate", status_code=202)

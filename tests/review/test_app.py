@@ -145,9 +145,12 @@ def test_regenerating_runs_in_the_background_and_shows_both_images(site):
     view = wait_for_job(site)
     unit = next(u for u in view["units"] if u["id"] == "001")
     assert (unit["current_version"], unit["compare_with"]) == (2, 1)
+    copy = site.project / "images" / f"{unit['stem']}.png"
+    assert copy.read_bytes() == (site.project / "images" / "_history" / "001_v2.png").read_bytes()
     chosen = site.post("/api/units/001/select-version", headers=WRITE, json={"v": 1}).json()
     unit = next(u for u in chosen["units"] if u["id"] == "001")
     assert (unit["current_version"], unit["compare_with"]) == (1, None)
+    assert copy.read_bytes() == (site.project / "images" / "_history" / "001_v1.png").read_bytes()
 
 
 def test_a_cli_run_holding_the_lock_makes_changes_wait(site):

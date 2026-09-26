@@ -770,3 +770,14 @@ def test_a_fresh_unit_gets_a_new_chain_and_keeps_its_old_versions(tmp_path, plan
     assert [v.v for v in unit.versions] == [1, 2]
     assert (unit.current_version, unit.compare_with, unit.status) == (2, 1, "generated")
     assert unit.versions[1].retry_of is None  # a new chain, not a retry of v1
+
+
+def test_a_run_that_isnt_a_regeneration_ends_an_old_comparison(tmp_path, plan_data, fake_images):
+    run = Run(tmp_path, plan_data, fake_images())
+    run.go(run.jobs[:1])
+    run.store.begin_regeneration("001")
+    asyncio.run(run.make_renderer(fake_images()).run(run.jobs[:1], fresh={"001"}))
+    assert run.store.unit("001").compare_with == 1
+    run.store.set_status("001", "planned")  # a later CLI run takes the unit up again
+    asyncio.run(run.make_renderer(fake_images()).run(run.jobs[:1]))
+    assert run.store.unit("001").compare_with is None  # the old pair doesn't come back

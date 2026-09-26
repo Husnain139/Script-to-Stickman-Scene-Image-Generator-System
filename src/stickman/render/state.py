@@ -77,6 +77,24 @@ class ProjectState(_Model):
     units: dict[str, UnitState] = Field(default_factory=dict)
 
 
+def write_current_copy(project_dir: Path, stem: str, version_file: str | None) -> bool:
+    """images/<stem>.png is a copy of the unit's current version, and is removed when it has none (spec §3).
+    `version_file` is the current version's file (relative to the project), or None. False when that file is
+    missing: the copy is then left as it is."""
+    target = project_dir / "images" / f"{stem}.png"
+    if version_file is None:
+        target.unlink(missing_ok=True)
+        return True
+    source = project_dir / version_file
+    if not source.is_file():
+        return False
+    data = source.read_bytes()
+    if not target.is_file() or target.read_bytes() != data:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        safe_write(target, data)
+    return True
+
+
 class StateStore:
     """state.json in memory. Every change is saved at once (spec §5.2)."""
 

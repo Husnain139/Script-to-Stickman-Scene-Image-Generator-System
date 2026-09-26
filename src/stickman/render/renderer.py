@@ -35,7 +35,7 @@ from stickman.render.chain import Check, Finish, Render, chain_of, finish_step, 
 from stickman.render.images import HISTORY_DIR, ImageDecodeError, decode_image, encode_png, history_name
 from stickman.render.jobs import JobBuilder, JobError, RenderJob
 from stickman.render.rewrite import Rewriter, RewriteFailed, softened_by_qc
-from stickman.render.state import StateStore, UnitStatus, Version
+from stickman.render.state import StateStore, UnitStatus, Version, write_current_copy
 from stickman.runlog import RunLog, shorten
 from stickman.settings import ConfigError, QCSettings, RetrySettings
 
@@ -314,14 +314,12 @@ class Renderer:
     def _finish(self, job: RenderJob, status: UnitStatus, current: int | None, error: str | None) -> None:
         """The final status, then the current copy images/<stem>.png. A kill between the two is put
         right by recover() (spec §5.2 [M3]). `current` None: no version shows the unit's latest design,
-        so it has no current version and no current copy (its versions stay in _history)."""
+        so it has no current version and no current copy (its versions stay in _history). A chain that
+        isn't a regeneration from the review page ends any side-by-side pair an earlier one left."""
+        if job.unit_id not in self._fresh:
+            self._store.unit(job.unit_id).compare_with = None  # saved by finish()
         self._store.finish(job.unit_id, status, current=current, clear_current=current is None,
                            error=error if status in ("needs_review", "failed") else None)
         unit = self._store.unit(job.unit_id)
         version = unit.version(unit.current_version) if unit.current_version is not None else None
-        project = self._store.project_dir
-        copy = project / "images" / f"{job.stem}.png"
-        if version is not None:
-            safe_write(copy, (project / version.file).read_bytes())
-        else:
-            copy.unlink(missing_ok=True)
+        write_current_copy(self._store.project_dir, job.stem, version.file if version is not None else None)

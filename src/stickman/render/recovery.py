@@ -8,9 +8,8 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from stickman.fsutil import safe_write
 from stickman.render.images import HISTORY_DIR, history_files, read_metadata
-from stickman.render.state import STATE_FILE, StateStore, UnitState, UnitStatus, Version
+from stickman.render.state import STATE_FILE, StateStore, UnitState, UnitStatus, Version, write_current_copy
 
 HAS_IMAGE = ("generated", "needs_review", "approved", "stale")
 
@@ -108,18 +107,10 @@ def _restore_current_images(store: StateStore, expected: Mapping[str, ExpectedUn
     for unit_id, want in expected.items():
         unit = store.state.units[unit_id]
         version = unit.version(unit.current_version) if unit.current_version is not None else None
-        if version is None:
-            # No version shows the unit's latest design (spec §5.2 [M4]): no current copy either.
-            (store.project_dir / "images" / f"{want.stem}.png").unlink(missing_ok=True)
-            continue
-        source = store.project_dir / version.file
-        if not source.is_file():
-            missing.append(version.file)
-            continue
-        data = source.read_bytes()
-        target = store.project_dir / "images" / f"{want.stem}.png"
-        if not target.is_file() or target.read_bytes() != data:
-            safe_write(target, data)
+        # No version shows the unit's latest design (spec §5.2 [M4]): no current copy either.
+        file = version.file if version is not None else None
+        if not write_current_copy(store.project_dir, want.stem, file):
+            missing.append(str(file))
     return missing
 
 
