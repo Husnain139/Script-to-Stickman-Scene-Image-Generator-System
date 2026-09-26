@@ -31,7 +31,6 @@ from stickman.bootstrap.store import (
     ranked,
 )
 from stickman.budget import Budget
-from stickman.cf.client import CloudflareClient
 from stickman.cf.errors import CFError, ErrorCategory
 from stickman.compare.report import collect, report_lines, write_report
 from stickman.compare.runs import PreparedRun, prepare_run, render_runs
@@ -65,9 +64,8 @@ from stickman.plan.planner import (
 )
 from stickman.plan.refresh import refresh_prompts, with_prompts
 from stickman.plan.store import LoadedPlan, PlanChangedError, load_plan, to_document, update_unit, write_plan
-from stickman.pricing import PricingConfig, format_usd, llm_cost_usd, load_pricing, usd_neurons
+from stickman.pricing import PricingConfig, format_usd, load_pricing, usd_neurons
 from stickman.project import ProjectError, check_unplanned, choose_project_dir, create_project, resolve_project, slugify
-from stickman.qc.vision import TYPICAL_TOKENS
 from stickman.render.calls import Calls
 from stickman.render.chain import chain_of
 from stickman.render.jobs import JobBuilder, JobError, RenderContext, RenderJob, random_seed
@@ -79,6 +77,7 @@ from stickman.render.rewrite import PlanRewriter
 from stickman.render.state import StateError, StateStore, needs_work
 from stickman.render.summary import summary_lines
 from stickman.runlog import RunLog, mask
+from stickman.runtime import build_client, check_usd, secrets_of
 from stickman.settings import (
     DEFAULT_CONFIG_FILES,
     AppConfig,
@@ -136,22 +135,7 @@ def _fail(message: str, code: int) -> NoReturn:
 
 
 def _secrets(cfg: AppConfig) -> tuple[str, ...]:
-    """What run logs, state.json and console messages built from Cloudflare errors mask: the token and
-    the account id (Cloudflare's routing errors echo the request path, which holds the account id)."""
-    if cfg.secrets is None:
-        return ()
-    return (cfg.secrets.cf_api_token.get_secret_value(), cfg.secrets.cf_account_id)
-
-
-def build_client(cfg: AppConfig) -> CloudflareClient:
-    if cfg.secrets is None:
-        raise ConfigError("Cloudflare credentials are not loaded")
-    return CloudflareClient(
-        cfg.secrets.cf_account_id,
-        cfg.secrets.cf_api_token.get_secret_value(),
-        plan=cfg.settings.account.plan,
-        timeout_s=cfg.settings.render.timeout_s,
-    )
+    return secrets_of(cfg)
 
 
 @app.command()
@@ -887,11 +871,7 @@ def _generate_locked(
 
 
 def _check_usd(cfg: AppConfig, pricing: PricingConfig) -> float:
-    """What a typical vision check costs (qwen's tokens; Task 11 of the M4 plan measured them)."""
-    if not cfg.settings.qc.vision:
-        return 0.0
-    price = pricing.llm(cfg.settings.llm.vision_model)
-    return 0.0 if price is None else llm_cost_usd(price, *TYPICAL_TOKENS)
+    return check_usd(cfg.settings, pricing)
 
 
 def _check_only(store: StateStore, jobs: list[RenderJob]) -> set[str]:
