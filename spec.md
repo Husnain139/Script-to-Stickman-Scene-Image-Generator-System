@@ -386,6 +386,8 @@ scenes:
 - A unit whose check couldn't reach the vision model is `failed` with its image unchecked (`qc: null`); the next run checks that image without a new one (§9.4).
 - A unit whose soften or redesign was written to `plan.yaml` but whose new image never came has `current_version: null`, so it never shows the old design. A refusal leaves it `needs_review`; an API error or unreadable bytes leave it `failed`, and the next run renders the new design afresh. Its old versions stay in `versions` and `_history`, and it isn't marked stale.
 
+**[M6]** Each unit also has `compare_with`: the version shown beside the current one after a regeneration from the review page, until one is chosen (null otherwise).
+
 ### 5.3 Character library entry (`library/characters/<id>/character.yaml`)
 ```yaml
 schema_version: 1
@@ -1000,6 +1002,13 @@ Expected figures: {N} ({list of cast names with figure counts}).
 - Image-generating actions run inside the server process, using the render module. They respect the lock file (§3) and the budget.
 - **Live updates:** server-sent events at `/api/events` for plan reloads, validation errors, generation progress and budget warnings.
 
+**[M6] As built:**
+- `stickman review [-p <project>] [--no-browser]` checks the port is free (exit 1 if not), serves on `review.host`:`review.port` (127.0.0.1 only) and opens the browser. It works without `.env`: approving and editing work; regenerating, replanning and making candidates need the credentials. Ctrl+C stops it.
+- Requests whose `Host` isn't `127.0.0.1:<port>` or `localhost:<port>` get 400 (DNS rebinding), and every change needs the header `X-Stickman: 1` (403 without it), which another site's page can't send; CORS is never enabled.
+- `/files/<path>` serves only PNGs under the project's `images/`, `library/_bootstrap/`, `library/style/` and `library/mascot/`, never `style_refs/`.
+- One page job at a time (regenerate, replan, more bootstrap candidates); another gets 409 naming the running one. A job holds the project `.lock` for its whole length (candidates: bootstrap's lock); a lock another process holds gives 409. While a page job runs, page actions change its own state in memory; otherwise they read `state.json` fresh and take the lock just for the write.
+- Events at `/api/events`: `plan`, `state`, `job` (started, progress, finished, paused, failed, with a masked message) and `budget`. The page fetches `GET /api/project` again on each.
+
 ### 12.2 Views
 1. **Plan** (read-only):
    - a table of units showing time, part, text, corrected text, visual_idea, shot, characters, and badges (locked, softened, split, "no valid cut")
@@ -1015,6 +1024,14 @@ Expected figures: {N} ({list of cast names with figure counts}).
    - After a regeneration, the old and new versions are shown **side by side** until one is chosen.
    - **Approve all remaining:** approves every `generated` unit, skipping `needs_review`, `stale` and `failed`.
 
+**[M6] As built:**
+- Stale is worked out for display from the fingerprints (§10.4); the page never writes it (`generate`'s recovery does).
+- **Regenerate** starts a new chain for the unit (full QC, retries, soften/redesign, like `generate`) after rebuilding its tool-built prompt for the current references (§7.4 [M5]). The unit's approval is cleared, and its old current version becomes `compare_with`: the side-by-side view shows it (left, `1`) beside the new one (right, `2`) until one is chosen. Choosing a version makes it current and ends the comparison; the approval stays only if the chosen version is the approved one, otherwise its QC gives the status.
+- **Sheets** shows bootstrap's anchor and mascot candidates with Approve and "Make 2 more"; mascot candidates made with a previous anchor are marked and can't be approved. Extras' sheets come in M7.
+- **Tests** lists `state.json`'s `test_units`, which M7 picks; until then it says so, and approving tests gives 409.
+- **Approve plan** sets `plan_approved`, refused while `plan.yaml` has errors. Nothing enforces the approvals until M7.
+- The page also shows a timeline strip: the video's units as segments sized by duration and coloured by status; clicking one focuses it.
+
 ### 12.3 Keyboard shortcuts
 `A` approve · `R` regenerate · `E` edit prompt · `H` history · `J` or `→` next · `K` or `←` previous · `1` or `2` pick left or right in the side-by-side view · `Esc` close.
 
@@ -1025,6 +1042,8 @@ Expected figures: {N} ({list of cast names with figure counts}).
   1. The page sends `{unit, new_prompt, plan_hash_when_loaded}`.
   2. The server compares that hash with the file on disk. If they differ, it returns **409**, and the page shows *"plan.yaml changed on disk since this page loaded — reload before saving"*. Nothing is overwritten.
   3. Otherwise it writes the prompt with ruamel and sets `prompt_locked: true`.
+
+**[M6]** The watcher is `watchfiles` on the project folder (not recursive), debounced 300 ms; `plan.yaml` sends `plan` and `state.json` sends `state`. The prompt editor keeps the plan hash from when it opened, so a change on disk while editing gives the 409.
 
 ### 12.5 API (internal)
 ```
@@ -1086,6 +1105,8 @@ Exit codes: `0` success; `1` user or validation error; `2` a pause (budget, dail
 - `stickman bootstrap [--candidates N] [--approve-anchor N | --approve-mascot N] [--force]`. Its first line is `Bootstrap: style v<N>`, as it has no project. Approving needs no credentials. It holds `library/_bootstrap/v<N>/.lock`.
 - `stickman compare [-p <planned project>] [--new] [--yes] [--force]` replaces `--script`: plan the script with `stickman new` first. It shows the estimate and asks before spending, unless `--yes`. Running it again continues the newest comparison of that project; `--new` starts another. It needs a finished bootstrap.
 - Pause messages name the command that continues the work (`stickman bootstrap`, `stickman compare -p …`).
+
+**[M6] `review`:** `stickman review [-p] [--no-browser]` (§12.1 [M6]). The project rule for `-p` is the same as `replan`'s until M7.
 
 ---
 

@@ -6,7 +6,9 @@ import asyncio
 import io
 import math
 import shutil
+import socket
 import sys
+import webbrowser
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -743,6 +745,71 @@ async def _compare_render(cfg: AppConfig, prepared: list[PreparedRun], meter: Me
                 client, prepared, meter, secrets=_secrets(cfg), control=RunControl(cfg.settings.retry.circuit_breaker),
                 sleep=_wait, on_done=lambda unit_id: progress.update(task, advance=1),
             )
+
+
+def _port_free(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def _open_browser(url: str) -> None:
+    webbrowser.open(url)
+
+
+def _serve(site: object, host: str, port: int) -> None:
+    import uvicorn
+
+    uvicorn.run(site, host=host, port=port, log_level="warning")
+
+
+@app.command()
+def review(
+    project: Path | None = typer.Option(None, "--project", "-p", help="Project folder or name. Default: the most recent."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't open the browser."),
+    workspace: Path = typer.Option(Path("."), "--workspace", "-w", help="Workspace folder."),
+) -> None:
+    """Open the review page (spec §12): the plan, sheets, tests and the gallery, on 127.0.0.1 only."""
+    root = workspace.resolve()
+    try:
+        directory = resolve_project(root, project)
+    except ProjectError as exc:
+        console.print("Project: (none found)")
+        _fail(str(exc), EXIT_USER_ERROR)
+    console.print(f"Project: {escape(directory.name)}")
+    try:
+        cfg = load_config(root)
+    except ConfigError:
+        try:
+            cfg = load_config(root, need_secrets=False)  # a settings error is raised again here, and exits 3
+        except ConfigError as exc:
+            _fail(str(exc), EXIT_CONFIG_ERROR)
+        console.print(
+            "[yellow]No Cloudflare credentials in .env: approving and editing work; regenerating, replanning and "
+            "making candidates need CF_ACCOUNT_ID and CF_API_TOKEN.[/yellow]"
+        )
+    host, port = cfg.settings.review.host, cfg.settings.review.port
+    if not _port_free(host, port):
+        _fail(
+            f"Port {port} on {host} is in use (another `stickman review`?). Stop it, or set review.port in "
+            "config/settings.yaml.",
+            EXIT_USER_ERROR,
+        )
+    from stickman.review.app import create_app  # the web stack loads only for this command
+
+    site = create_app(root, directory, cfg.settings, client_factory=lambda: build_client(cfg), secrets=_secrets(cfg))
+    url = f"http://{host}:{port}/"
+    console.print(escape(f"Review page: {url} (Ctrl+C stops it)"))
+    if not no_browser:
+        _open_browser(url)
+    try:
+        _serve(site, host, port)
+    except KeyboardInterrupt:
+        pass
+    console.print("Review page stopped.")
 
 
 HAND_EDITED_NOTE = (
