@@ -93,6 +93,9 @@ def test_finish_sets_the_status_the_current_version_and_the_error(tmp_path):
     assert (unit.status, unit.current_version, unit.error) == ("needs_review", 1, "rewrite failed: plan.yaml changed")
     store.finish("006a", "needs_review", current=None)
     assert StateStore.load(tmp_path).state.units["006a"].current_version == 1
+    store.finish("006a", "needs_review", current=None, clear_current=True, error="refused: flagged")
+    unit = StateStore.load(tmp_path).state.units["006a"]
+    assert (unit.current_version, [v.v for v in unit.versions], unit.error) == (None, [1, 2], "refused: flagged")
 
 
 def test_units_a_run_takes_up(tmp_path):

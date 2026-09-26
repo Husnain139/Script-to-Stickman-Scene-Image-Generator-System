@@ -27,10 +27,14 @@ class RewriteFailed(Exception):
     """A rewrite couldn't be made or saved. The unit goes to needs_review with this message."""
 
 
-class Rewriter(Protocol):
-    async def soften(self, unit_id: str, notes: str) -> PlanUnit: ...
+UnitCheck = Callable[[PlanUnit], None]
+"""Called with the rewritten unit before plan.yaml is written; raises RewriteFailed to write nothing."""
 
-    async def redesign(self, unit_id: str, notes: str) -> PlanUnit: ...
+
+class Rewriter(Protocol):
+    async def soften(self, unit_id: str, notes: str, check: UnitCheck | None = None) -> PlanUnit: ...
+
+    async def redesign(self, unit_id: str, notes: str, check: UnitCheck | None = None) -> PlanUnit: ...
 
 
 class PlanRewriter:
@@ -42,18 +46,37 @@ class PlanRewriter:
         self._path = plan_path
         self._lock = asyncio.Lock()  # one load-and-write of plan.yaml at a time
 
-    async def soften(self, unit_id: str, notes: str) -> PlanUnit:
-        def mark(unit: PlanUnit) -> PlanUnit:
+    async def soften(self, unit_id: str, notes: str, check: UnitCheck | None = None) -> PlanUnit:
+        def mark(loaded: PlanUnit, unit: PlanUnit) -> PlanUnit:
             reason = (unit.softened_reason or "").strip() or "made more symbolic and tasteful"
             return unit.model_copy(update={"softened": True, "softened_reason": SOFTEN_PREFIX + reason})
 
-        return await self._rewrite(unit_id, f"{SOFTEN_HINT}. {notes}" if notes else SOFTEN_HINT, mark)
+        hint = f"{SOFTEN_HINT}. {notes}" if notes else SOFTEN_HINT
+        return await self._rewrite(unit_id, lambda loaded: hint, mark, check)
 
-    async def redesign(self, unit_id: str, notes: str) -> PlanUnit:
-        hint = f"{REDESIGN_HINT}: {notes}" if notes else f"{REDESIGN_HINT}; make the idea clearer in one simple picture"
-        return await self._rewrite(unit_id, hint, lambda unit: unit)
+    async def redesign(self, unit_id: str, notes: str, check: UnitCheck | None = None) -> PlanUnit:
+        """A unit QC already softened keeps its soften marker (soften-once rests on it, spec §7.5) and
+        stays symbolic: the hint carries SOFTEN_HINT too."""
+        base = f"{REDESIGN_HINT}: {notes}" if notes else f"{REDESIGN_HINT}; make the idea clearer in one simple picture"
 
-    async def _rewrite(self, unit_id: str, hint: str, finish: Callable[[PlanUnit], PlanUnit]) -> PlanUnit:
+        def hint(loaded: PlanUnit) -> str:
+            return f"{SOFTEN_HINT}. {base}" if softened_by_qc(loaded) else base
+
+        def keep_soften(loaded: PlanUnit, unit: PlanUnit) -> PlanUnit:
+            if not softened_by_qc(loaded):
+                return unit
+            return unit.model_copy(update={"softened": True, "softened_reason": loaded.softened_reason})
+
+        return await self._rewrite(unit_id, hint, keep_soften, check)
+
+    async def _rewrite(
+        self,
+        unit_id: str,
+        hint: Callable[[PlanUnit], str],
+        finish: Callable[[PlanUnit, PlanUnit], PlanUnit],
+        check: UnitCheck | None,
+    ) -> PlanUnit:
+        """`hint` and `finish` see the unit as plan.yaml holds it now; `finish` gets it and the new design."""
         async with self._lock:
             try:
                 loaded = load_plan(self._path, library_ids=self._ctx.library_ids)
@@ -65,9 +88,11 @@ class PlanRewriter:
             if unit.prompt_locked:
                 raise RewriteFailed(f"{unit_id} has a locked prompt, so the LLM never rewrites it")
             try:
-                updated = finish(await replan_unit(self._runner, self._ctx, loaded.plan, unit_id, hint=hint))
+                updated = finish(unit, await replan_unit(self._runner, self._ctx, loaded.plan, unit_id, hint=hint(unit)))
             except PlanningError as exc:
                 raise RewriteFailed(str(exc)) from exc
+            if check is not None:
+                check(updated)  # e.g. the new image request can be built; else nothing is written
             fields = {key: value for key, value in updated.model_dump(mode="json").items() if key in REPLAN_KEYS}
             update_unit(loaded.doc, unit_id, fields)
             try:

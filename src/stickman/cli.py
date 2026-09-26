@@ -42,7 +42,7 @@ from stickman.qc.vision import TYPICAL_TOKENS
 from stickman.render.jobs import JobBuilder, JobError, RenderContext, RenderJob
 from stickman.render.lock import LockHeld, ProjectLock
 from stickman.render.recovery import recover
-from stickman.render.renderer import Renderer, RunResult, StopReason
+from stickman.render.renderer import GuardedChat, Renderer, RunControl, RunResult, StopReason
 from stickman.render.rewrite import PlanRewriter
 from stickman.render.state import StateError, StateStore, needs_work
 from stickman.render.summary import summary_lines
@@ -445,9 +445,11 @@ def _generate_locked(
         console.print("Nothing to generate: every unit has a checked image, or is stale (never regenerated automatically).")
         return
     try:
-        jobs = builder.jobs(todo)
+        jobs = builder.jobs(todo)  # also reads the vision check's mascot reference, through ReferenceFiles
     except JobError as exc:
         _fail(str(exc), EXIT_USER_ERROR)
+    except ConfigError as exc:
+        _fail(str(exc), EXIT_CONFIG_ERROR)
     log = RunLog.for_project(directory, secrets=_secrets(cfg))
     ledger = Ledger(cfg.workspace / LEDGER_FILE)
     now = datetime.now().astimezone()
@@ -482,11 +484,14 @@ def _print_run_start(jobs: list[RenderJob], store: StateStore, cfg: AppConfig, c
     estimate = sum(job.estimate_usd for job in to_make) + check * len(jobs)
     how = (f", each checked by {cfg.settings.llm.vision_model}" if cfg.settings.qc.vision
            else ", pixel checks only (qc.vision is off)")
-    cost = f"≈ {format_usd(estimate)} (≈ {usd_neurons(estimate):,.0f} neurons)"
+    cost = f"≈ {format_usd(estimate)} (≈ {usd_neurons(estimate):,.0f} neurons; retries not included)"
     if to_make:
         console.print(escape(f"Generating {len(to_make)} unit(s) on {to_make[0].model}{how} {cost}."))
     if check_only:
-        console.print(escape(f"Checking {len(check_only)} image(s) made before QC existed; they are not made again."))
+        console.print(escape(
+            f"Checking {len(check_only)} image(s) made before QC existed. Each is checked, not made again, "
+            "unless it fails its check; then it is retried like any other."
+        ))
         if not to_make:
             console.print(escape(f"Cost {cost}."))
     if cfg.settings.account.plan != "free":
@@ -524,15 +529,19 @@ async def _render(
 
         async with build_client(cfg) as client:
             # A soften or redesign reruns stage 3 for one unit, on the run's meter: its calls are budget-checked.
+            # They go through GuardedChat: none starts once the run is stopping, and their temporary
+            # errors count toward the run's circuit breaker (kind `llm`).
+            control = RunControl(cfg.settings.retry.circuit_breaker)
             runner = StageRunner(
-                client, cfg.settings.llm, cfg.settings.retry, cache_dir=directory / ".cache" / "llm", log=log,
-                meter=meter, sleep=_wait,
+                GuardedChat(client, control), cfg.settings.llm, cfg.settings.retry,
+                cache_dir=directory / ".cache" / "llm", log=log, meter=meter, sleep=_wait,
             )
             planning = PlanningContext(ctx.workspace, ctx.settings, ctx.style, ctx.mascot, ctx.rules, ctx.library)
             renderer = Renderer(
                 client, store, meter, builder, qc=cfg.settings.qc, vision_model=cfg.settings.llm.vision_model,
                 retry=cfg.settings.retry, concurrency=cfg.settings.render.concurrency, log=log,
                 rewriter=PlanRewriter(runner, planning, directory / "plan.yaml"), sleep=_wait, on_done=done,
+                control=control,
             )
             return await renderer.run(jobs), renderer.softened
 

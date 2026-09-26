@@ -24,8 +24,8 @@ def version(v, *, retry_of=None, reason=None, result=None, fp="sha256:a"):
                    latency_s=1.0, created=datetime(2026, 9, 25, tzinfo=timezone.utc))
 
 
-def step(chain, *, qc_max=2, locked=False, softened=False, refused=False):
-    return next_step(chain, qc_max=qc_max, locked=locked, softened=softened, refused=refused)
+def step(chain, *, qc_max=2, locked=False, softened=False, refused=False, fingerprint=None):
+    return next_step(chain, qc_max=qc_max, locked=locked, softened=softened, refused=refused, fingerprint=fingerprint)
 
 
 def test_the_chain_runs_from_the_current_version_back_through_retry_of():
@@ -114,3 +114,19 @@ def test_only_versions_of_the_latest_fields_can_become_current():
 
 def test_finishing_with_nothing_made_leaves_the_unit_for_review():
     assert finish_step([]) == Finish("needs_review", None)
+
+
+def test_no_version_of_an_older_design_becomes_current():
+    """A soften was written, but its image never came: the chain holds only the old design's versions."""
+    old = version(1, result=qc("safety_filtered", 1), fp="sha256:before-soften")
+    assert best_version([old], "sha256:after-soften") is None
+    assert finish_step([old], "sha256:after-soften") == Finish("needs_review", None)
+    assert step([old], refused=True, softened=True, fingerprint="sha256:after-soften") == Finish("needs_review", None)
+    assert finish_step([old], "sha256:before-soften") == Finish("needs_review", 1)
+
+
+def test_a_refusal_respects_qc_max():
+    assert step([], refused=True, qc_max=0) == Finish("needs_review", None)
+    text = [version(1, result=qc("text"))]
+    assert step(text, refused=True, qc_max=1) == Finish("needs_review", 1)  # the refused request was retry 1
+    assert step(text, refused=True, qc_max=2).rewrite == "soften"

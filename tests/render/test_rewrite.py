@@ -6,7 +6,7 @@ import pytest
 from stickman.cf.errors import CFError, ErrorCategory
 from stickman.plan.models import parse_plan
 from stickman.plan.planner import load_planning_context
-from stickman.plan.store import load_plan, to_document, write_plan
+from stickman.plan.store import load_plan, to_document, update_unit, write_plan
 from stickman.render.rewrite import SOFTEN_HINT, SOFTEN_PREFIX, PlanRewriter, RewriteFailed, softened_by_qc
 from stickman.settings import Settings
 
@@ -71,6 +71,37 @@ def test_redesign_passes_the_checkers_notes_and_leaves_softened_alone(tmp_path, 
     assert "HINT: The last images did not show the idea clearly: the fire is missing" in chat.calls[0]["messages"][1]["content"]
     assert (unit.id, unit.softened, unit.start) == ("002a", False, 4.0)
     assert load_plan(project).plan.units()[1].visual_idea == "A moon rises over a quiet hut"
+
+
+def test_a_redesign_of_a_softened_unit_keeps_the_soften_marker_and_stays_symbolic(tmp_path, project, fake_chat, stage_runner):
+    loaded = load_plan(project)
+    update_unit(loaded.doc, "001", {"softened": True, "softened_reason": SOFTEN_PREFIX + "a hut instead"})
+    write_plan(project, loaded.doc, expected_hash=loaded.hash)
+    chat = fake_chat(describe_reply())  # the describe stage answers softened: false
+    unit = asyncio.run(rewriter(tmp_path, project, chat, stage_runner).redesign("001", "still unclear"))
+    assert (unit.softened, unit.softened_reason) == (True, SOFTEN_PREFIX + "a hut instead")
+    assert f"HINT: {SOFTEN_HINT}. The last images did not show the idea clearly: still unclear" in (
+        chat.calls[0]["messages"][1]["content"])
+    saved = load_plan(project).plan.units()[0]
+    assert saved == unit and softened_by_qc(saved)
+
+
+def test_the_check_runs_on_the_new_unit_before_plan_yaml_is_written(tmp_path, project, fake_chat, stage_runner):
+    before = project.read_bytes()
+    seen = []
+
+    def refuse(unit):
+        seen.append(unit)
+        raise RewriteFailed("no image_prompt for 001")
+
+    with pytest.raises(RewriteFailed, match="no image_prompt"):
+        asyncio.run(rewriter(tmp_path, project, fake_chat(describe_reply()), stage_runner).soften("001", "", refuse))
+    assert project.read_bytes() == before
+    [unit] = seen
+    assert softened_by_qc(unit) and unit.visual_idea == "A moon rises over a quiet hut"
+    passed = []
+    unit = asyncio.run(rewriter(tmp_path, project, fake_chat(describe_reply()), stage_runner).soften("001", "", passed.append))
+    assert passed == [unit] and load_plan(project).plan.units()[0] == unit
 
 
 def test_a_locked_unit_is_never_rewritten(tmp_path, project, fake_chat, stage_runner):

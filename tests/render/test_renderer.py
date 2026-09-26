@@ -13,15 +13,20 @@ from stickman.cf.errors import CFError, ErrorCategory
 from stickman.config_files import MascotConfig, load_mascot, load_style, load_visual_rules
 from stickman.ledger import Ledger
 from stickman.meter import Meter
+from stickman.plan.llm import StageRunner
 from stickman.plan.models import parse_plan
+from stickman.plan.planner import load_planning_context
+from stickman.plan.store import to_document, write_plan
 from stickman.pricing import load_pricing
+from stickman.render.images import image_stem
 from stickman.render.jobs import JobBuilder, RenderContext
-from stickman.render.renderer import Renderer, StopReason
-from stickman.render.rewrite import SOFTEN_PREFIX, RewriteFailed
-from stickman.render.state import StateStore
+from stickman.render.recovery import ExpectedUnit, recover
+from stickman.render.renderer import GuardedChat, Renderer, RunControl, StopReason
+from stickman.render.rewrite import SOFTEN_PREFIX, PlanRewriter, RewriteFailed
+from stickman.render.state import StateStore, needs_work
 from stickman.render.summary import review_reason
 from stickman.runlog import RunLog
-from stickman.settings import BudgetSettings, QCSettings, RetrySettings, Settings
+from stickman.settings import BudgetSettings, LLMSettings, QCSettings, RetrySettings, Settings
 
 FOLDER = "2026-09-25_demo"
 KLEIN_4B = "@cf/black-forest-labs/flux-2-klein-4b"
@@ -43,7 +48,7 @@ class Run:
     """A renderer over plan_data's three units: 001, 002a and 002b."""
 
     def __init__(self, workspace, plan_data, client, *, mascot=None, budget=None, concurrency=4, retry=None,
-                 qc=None, rewriter=None):
+                 qc=None, rewriter=None, control=None):
         self.project = workspace / "projects" / FOLDER
         self.project.mkdir(parents=True, exist_ok=True)
         ctx = RenderContext(workspace, Settings(), mascot or load_mascot(workspace), (), load_pricing(workspace),
@@ -60,12 +65,13 @@ class Run:
         self.retry = retry or RetrySettings()
         self.concurrency = concurrency
         self.rewriter = rewriter
-        self.renderer = self.make_renderer(client)
+        self.renderer = self.make_renderer(client, control)
 
-    def make_renderer(self, client):
+    def make_renderer(self, client, control=None):
         return Renderer(client, self.store, self.meter, self.builder, qc=self.qc, vision_model=VISION,
                         retry=self.retry, concurrency=self.concurrency,
-                        log=RunLog(self.log_path, secrets=("tok-secret",)), rewriter=self.rewriter, sleep=no_sleep)
+                        log=RunLog(self.log_path, secrets=("tok-secret",)), rewriter=self.rewriter, sleep=no_sleep,
+                        control=control)
 
     def go(self, jobs=None):
         return asyncio.run(self.renderer.run(self.jobs if jobs is None else jobs))
@@ -101,18 +107,29 @@ def scripted(vision, per_unit):
 
 
 class FakeRewriter:
+    """Plays PlanRewriter: `saved` is what plan.yaml holds after each unit's rewrite, written only once
+    the renderer's check of the new unit passed."""
+
     def __init__(self, plan_data):
         self.units = {unit.id: unit for unit in parse_plan(plan_data).units()}
         self.calls = []
+        self.saved = {}
 
-    async def soften(self, unit_id, notes):
+    async def soften(self, unit_id, notes, check=None):
         self.calls.append(("soften", unit_id, notes))
-        return self.units[unit_id].model_copy(update={
-            "softened": True, "softened_reason": SOFTEN_PREFIX + "symbolic", "image_prompt": f"softened prompt for {unit_id}"})
+        return self.write(self.units[unit_id].model_copy(update={
+            "softened": True, "softened_reason": SOFTEN_PREFIX + "symbolic", "image_prompt": f"softened prompt for {unit_id}"}),
+            check)
 
-    async def redesign(self, unit_id, notes):
+    async def redesign(self, unit_id, notes, check=None):
         self.calls.append(("redesign", unit_id, notes))
-        return self.units[unit_id].model_copy(update={"image_prompt": f"redesigned prompt for {unit_id}"})
+        return self.write(self.units[unit_id].model_copy(update={"image_prompt": f"redesigned prompt for {unit_id}"}), check)
+
+    def write(self, unit, check):
+        if check is not None:
+            check(unit)
+        self.saved[unit.id] = unit
+        return unit
 
 
 def test_every_unit_gets_one_version_its_history_file_and_its_current_image(tmp_path, plan_data, fake_images):
@@ -473,7 +490,7 @@ def test_temporary_errors_of_checks_count_toward_the_breaker(tmp_path, plan_data
 
 def test_a_failed_rewrite_leaves_the_unit_for_review_with_the_reason(tmp_path, plan_data, fake_images, drawings):
     class Broken(FakeRewriter):
-        async def soften(self, unit_id, notes):
+        async def soften(self, unit_id, notes, check=None):
             raise RewriteFailed("plan.yaml changed on disk during the rewrite, so nothing was written")
 
     run = Run(tmp_path, plan_data, fake_images(lambda call: jpeg_of(drawings.all_black())), rewriter=Broken(plan_data))
@@ -500,3 +517,161 @@ def test_with_the_vision_check_off_only_the_pixel_checks_run(tmp_path, plan_data
     run.go()
     assert client.chat_calls == [] and set(run.statuses().values()) == {"generated"}
     assert run.store.unit("001").versions[0].qc.vision is None
+
+
+# --- The final review's fix wave (I1-I4, M2, M8) ---
+
+UNREACHABLE = [CFError(ErrorCategory.TRANSIENT, "bad gateway", status=502),
+               CFError(ErrorCategory.RATE_LIMITED, "too many requests", status=429)]
+
+
+@pytest.mark.parametrize("error", UNREACHABLE, ids=["transient", "rate_limited"])
+def test_a_checker_that_cannot_be_reached_is_asked_again_next_run_about_the_same_image(
+        tmp_path, plan_data, fake_images, error):
+    client = fake_images(chat=lambda model, messages: error)
+    run = Run(tmp_path, plan_data, client, concurrency=1)
+    assert run.go(run.jobs[:1]).stop is None
+    unit = run.store.unit("001")
+    assert (unit.status, unit.current_version, [v.qc for v in unit.versions]) == ("failed", 1, [None])
+    assert unit.error == f"{error.category}: {error.message}"
+    assert needs_work(unit) and len(client.calls) == 1
+    later = fake_images()
+    asyncio.run(run.make_renderer(later).run(run.jobs[:1]))
+    assert (later.calls, len(later.chat_calls)) == ([], 1)
+    unit = run.store.unit("001")
+    assert (unit.status, unit.current_version, unit.error, unit.versions[0].qc.passed) == ("generated", 1, None, True)
+
+
+def test_a_vision_outage_trips_the_breaker_even_while_images_succeed(tmp_path, plan_data, fake_images):
+    client = fake_images(chat=lambda model, messages: TRANSIENT)
+    run = Run(tmp_path, plan_data, client, concurrency=1, retry=RetrySettings(transient_max=3, circuit_breaker=5))
+    assert run.go().stop is StopReason.CIRCUIT_BREAKER
+    # 001: 4 checks fail; 002a's image succeeds (images count on their own), then its check is the 5th in a row.
+    assert (len(client.calls), len(client.chat_calls)) == (2, 5)
+    assert run.statuses() == {"001": "failed", "002a": "planned", "002b": "planned"}
+    assert [v.qc for v in run.store.unit("002a").versions] == [None]  # checked next run, not made again
+
+
+def test_the_breaker_counts_each_kind_of_call_on_its_own():
+    control = RunControl(3)
+    for kind in ("vision", "vision", "image", "llm"):
+        control.transient(kind)
+    control.success("image")
+    control.success("llm")
+    assert control.reason is None
+    control.transient("vision")
+    assert control.reason is StopReason.CIRCUIT_BREAKER and "3 temporary errors in a row" in control.detail
+
+
+def test_a_refusal_after_the_soften_leaves_no_old_design_current_and_is_not_stale_next_run(
+        tmp_path, plan_data, fake_images, drawings):
+    refused = CFError(ErrorCategory.REFUSED, "flagged tok-secret", status=400)
+    rewriter = FakeRewriter(plan_data)
+    run = Run(tmp_path, plan_data, fake_images([jpeg_of(drawings.all_black()), refused]), rewriter=rewriter)
+    run.go(run.jobs[:1])
+    unit = run.store.unit("001")
+    assert (unit.status, unit.current_version, [v.v for v in unit.versions]) == ("needs_review", None, [1])
+    assert (unit.error, review_reason(unit)) == ("refused: flagged ***", "safety_filtered")
+    assert (run.project / unit.versions[0].file).is_file()  # the old image stays in _history
+    assert not (run.project / "images" / "001_00-00.0.png").exists()
+    recover(run.store, {"001": ExpectedUnit(image_stem("001", 0.0), run.builder.fingerprint(rewriter.saved["001"]))})
+    unit = run.store.unit("001")
+    assert (unit.status, unit.current_version) == ("needs_review", None)
+    assert not (run.project / "images" / "001_00-00.0.png").exists()
+
+
+@pytest.mark.parametrize(("outcomes", "error"), [
+    ([CFError(ErrorCategory.BAD_REQUEST, "invalid tok-secret", status=400)], "bad_request: invalid ***"),
+    ([TRANSIENT] * 4, "transient: bad gateway"),
+    ([b"<html>oops</html>"], "bad_image: "),
+], ids=["bad_request", "transient", "bad_bytes"])
+def test_an_error_on_the_softened_image_fails_the_unit_and_the_next_run_renders_the_new_design(
+        tmp_path, plan_data, fake_images, drawings, outcomes, error):
+    rewriter = FakeRewriter(plan_data)
+    run = Run(tmp_path, plan_data, fake_images([jpeg_of(drawings.all_black()), *outcomes]), rewriter=rewriter)
+    run.go(run.jobs[:1])
+    unit = run.store.unit("001")
+    assert (unit.status, unit.current_version, [v.v for v in unit.versions]) == ("failed", None, [1])
+    assert unit.error.startswith(error)
+    plan_now = rewriter.saved["001"]
+    recover(run.store, {"001": ExpectedUnit(image_stem("001", 0.0), run.builder.fingerprint(plan_now))})
+    unit = run.store.unit("001")
+    assert (unit.status, unit.current_version) == ("failed", None) and needs_work(unit)
+    later = fake_images()
+    asyncio.run(run.make_renderer(later).run([run.builder.job(plan_now)]))
+    [call] = later.calls
+    assert call["prompt"] == "softened prompt for 001"
+    unit = run.store.unit("001")
+    assert (unit.status, unit.current_version, unit.versions[1].retry_of) == ("generated", 2, None)
+
+
+def test_a_rewrite_whose_request_cannot_be_built_is_never_written(tmp_path, plan_data, fake_images, drawings):
+    class NoPrompt(FakeRewriter):
+        async def soften(self, unit_id, notes, check=None):
+            self.calls.append(("soften", unit_id, notes))
+            return self.write(self.units[unit_id].model_copy(update={
+                "softened": True, "softened_reason": SOFTEN_PREFIX + "symbolic", "image_prompt": " "}), check)
+
+    rewriter = NoPrompt(plan_data)
+    run = Run(tmp_path, plan_data, fake_images(lambda call: jpeg_of(drawings.all_black())), rewriter=rewriter)
+    run.go(run.jobs[:1])
+    assert rewriter.calls == [("soften", "001", "")] and rewriter.saved == {}
+    unit = run.store.unit("001")
+    assert (unit.status, unit.current_version) == ("needs_review", 1)  # plan.yaml still holds v1's design
+    assert unit.error.startswith("rewrite failed: no image_prompt for 001")
+
+
+def test_no_rewrite_starts_once_the_run_is_stopping(tmp_path, plan_data, fake_images, drawings):
+    daily = CFError(ErrorCategory.DAILY_LIMIT, "daily free allocation", status=429)
+    black = jpeg_of(drawings.all_black())
+    rewriter = FakeRewriter(plan_data)
+    client = fake_images(lambda call: slow(black, 0.05) if call["prompt"] == "prompt for 001" else daily)
+    run = Run(tmp_path, plan_data, client, concurrency=2, rewriter=rewriter)
+    assert run.go(run.jobs[:2]).stop is StopReason.DAILY_LIMIT
+    assert rewriter.calls == [] and len(client.calls) == 2
+    unit = run.store.unit("001")
+    assert (unit.status, [v.qc.reason for v in unit.versions]) == ("planned", ["safety_filtered"])
+
+
+def test_temporary_errors_of_a_rewrite_count_toward_the_breaker(tmp_path, plan_data, fake_images, fake_chat, drawings):
+    path = tmp_path / "projects" / FOLDER / "plan.yaml"
+    path.parent.mkdir(parents=True)
+    write_plan(path, to_document(parse_plan(plan_data)), expected_hash=None)
+    before = path.read_bytes()
+    retry = RetrySettings(transient_max=3, circuit_breaker=3)
+    control = RunControl(retry.circuit_breaker)
+    chat = fake_chat(lambda model, messages: TRANSIENT)
+    runner = StageRunner(GuardedChat(chat, control), LLMSettings(), retry, cache_dir=None, log=RunLog(None), sleep=no_sleep)
+    rewriter = PlanRewriter(runner, load_planning_context(tmp_path, Settings()), path)
+    run = Run(tmp_path, plan_data, fake_images(lambda call: jpeg_of(drawings.all_black())), retry=retry,
+              rewriter=rewriter, control=control)
+    result = run.go(run.jobs[:1])
+    assert result.stop is StopReason.CIRCUIT_BREAKER and "llm" in result.detail
+    assert len(chat.calls) == 3  # the third temporary error in a row trips it, and no 4th attempt starts
+    assert path.read_bytes() == before
+    assert run.store.unit("001").status == "planned"
+
+
+def test_with_no_qc_retries_a_refusal_is_not_softened(tmp_path, plan_data, fake_images):
+    refused = CFError(ErrorCategory.REFUSED, "flagged", status=400)
+    rewriter = FakeRewriter(plan_data)
+    client = fake_images([refused])
+    run = Run(tmp_path, plan_data, client, rewriter=rewriter, retry=RetrySettings(qc_max=0))
+    run.go(run.jobs[:1])
+    assert rewriter.calls == [] and len(client.calls) == 1
+    unit = run.store.unit("001")
+    assert (unit.status, review_reason(unit)) == ("needs_review", "safety_filtered")
+
+
+def test_a_blurred_image_is_softened_like_a_dark_one(tmp_path, plan_data, fake_images, drawings, jpeg):
+    rewriter = FakeRewriter(plan_data)
+    client = fake_images([jpeg_of(drawings.blurred()), jpeg])
+    run = Run(tmp_path, plan_data, client, rewriter=rewriter)
+    run.go(run.jobs[:1])
+    assert rewriter.calls == [("soften", "001", "")]
+    assert [call["prompt"] for call in client.calls] == ["prompt for 001", "softened prompt for 001"]
+    unit = run.store.unit("001")
+    v1, v2 = unit.versions
+    assert (v1.qc.reason, v1.qc.vision, v2.retry_reason) == ("safety_filtered", None, "safety_filtered")
+    assert (unit.status, unit.current_version) == ("generated", 2)
+    assert run.renderer.softened == ["001"]

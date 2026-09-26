@@ -139,6 +139,16 @@ def test_the_mascot_sheet_goes_with_the_vision_check_of_mascot_units_once_it_exi
     assert builder(tmp_path, plan_data, mascot=unapproved).jobs(parse_plan(plan_data).units())[0].vision_reference is None
 
 
+def test_a_mascot_reference_in_style_refs_is_never_sent_to_the_vision_check(tmp_path, plan_data):
+    """No anchor, so the image request sends no references: only the vision check would read it."""
+    png(tmp_path / "style_refs" / "mascot.png", (384, 512))
+    mascot = MASCOT_WITH_SHEET.model_copy(update={"ref": "style_refs/mascot.png"})
+    jobs_builder = builder(tmp_path, plan_data, mascot=mascot)
+    assert jobs_builder.references(parse_plan(plan_data).units()[0]) == ()
+    with pytest.raises(ConfigError, match="never sent to any API"):
+        jobs_builder.jobs(parse_plan(plan_data).units())
+
+
 def test_the_mascot_is_in_image_1_when_the_anchor_and_its_sheet_are_sent(tmp_path, plan_data):
     png(tmp_path / "library/style/anchor_v1_ref.png")
     png(tmp_path / "library/mascot/ref_v1.png", (384, 512))

@@ -3,6 +3,7 @@ import json
 from collections import Counter
 
 import pytest
+from PIL import Image
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -264,9 +265,57 @@ def test_images_made_before_qc_are_checked_without_a_new_image(workspace, monkey
     client = use_images(monkeypatch, fake_images())
     result = generate(workspace)
     assert result.exit_code == 0, result.output
-    assert "Checking 1 image(s) made before QC existed; they are not made again." in result.output
+    assert ("Checking 1 image(s) made before QC existed. Each is checked, not made again, unless it fails "
+            "its check; then it is retried like any other.") in result.output
+    assert "retries not included" in result.output
     assert client.calls == [] and len(client.chat_calls) == 1
     assert json.loads(path.read_text(encoding="utf-8"))["units"]["001"]["versions"][0]["qc"]["passed"] is True
+
+
+def test_the_run_start_estimate_says_it_leaves_out_retries(workspace, monkeypatch, fake_images):
+    use_images(monkeypatch, fake_images())
+    result = generate(workspace)
+    assert result.exit_code == 0, result.output
+    line = next(row for row in result.output.splitlines() if row.startswith("Generating 3 unit(s)"))
+    assert line.endswith("neurons; retries not included).")
+
+
+def test_a_mascot_reference_in_style_refs_exits_3_before_any_request(workspace, monkeypatch, fake_images):
+    stock = workspace / "style_refs" / "mascot.png"
+    stock.parent.mkdir()
+    Image.new("RGB", (384, 512), "white").save(stock, format="PNG")
+    (workspace / "config").mkdir()
+    (workspace / "config" / "mascot.yaml").write_text(
+        "schema_version: 1\nid: mascot\nname: Everyman\nfigures: 1\nidentity: a stickman with three hair strokes\n"
+        "default_outfit: a tie\nsheet: library/mascot/sheet_v1.png\nref: style_refs/mascot.png\nseed: 7\n"
+        "model: null\nstyle_version: 1\n", encoding="utf-8")
+    client = use_images(monkeypatch, fake_images())
+    result = generate(workspace)
+    assert result.exit_code == 3, result.output
+    assert "never sent to any API" in result.output
+    assert client.calls == [] and client.chat_calls == []
+
+
+def test_an_outage_during_a_soften_pauses_the_run_and_leaves_plan_yaml_alone(workspace, monkeypatch, fake_images, vision, drawings, jpeg):
+    (workspace / "config").mkdir()
+    (workspace / "config" / "settings.yaml").write_text(
+        "render:\n  concurrency: 1\nretry:\n  circuit_breaker: 3\n", encoding="utf-8")
+    buffer = io.BytesIO()
+    drawings.all_black().save(buffer, format="JPEG")
+    black = buffer.getvalue()
+    transient = CFError(ErrorCategory.TRANSIENT, "bad gateway", status=502)
+
+    def chat(model, messages):
+        return transient if messages[0]["role"] == "system" else vision.passing(model, messages)
+
+    client = use_images(monkeypatch, fake_images(lambda call: black if call["prompt"] == "prompt for 001" else jpeg, chat=chat))
+    before = (project(workspace) / "plan.yaml").read_bytes()
+    result = generate(workspace)
+    assert result.exit_code == 2, result.output
+    assert cli.OUTAGE_MESSAGE in result.output
+    assert sum(1 for call in client.chat_calls if call["messages"][0]["role"] == "system") == 3
+    assert (project(workspace) / "plan.yaml").read_bytes() == before
+    assert statuses(workspace)["001"] == "planned"
 
 
 def test_turning_the_vision_check_off_leaves_the_pixel_checks(workspace, monkeypatch, fake_images):

@@ -19,7 +19,8 @@ from stickman.cf.errors import CFError, ErrorCategory
 from stickman.cf.retry import with_retries
 from stickman.fsutil import safe_write
 from stickman.meter import Meter, Metered, billing_of, local_now
-from stickman.plan.llm import finish_reason
+from stickman.plan.llm import ChatClient, finish_reason
+from stickman.plan.models import PlanUnit
 from stickman.qc.decide import QCResult, decide
 from stickman.qc.pixel import pixel_check
 from stickman.qc.vision import (
@@ -37,7 +38,7 @@ from stickman.render.chain import Check, Finish, Render, chain_of, finish_step, 
 from stickman.render.images import HISTORY_DIR, ImageDecodeError, decode_image, encode_png, history_name
 from stickman.render.jobs import JobBuilder, JobError, RenderJob
 from stickman.render.rewrite import Rewriter, RewriteFailed, softened_by_qc
-from stickman.render.state import StateStore, Version
+from stickman.render.state import StateStore, UnitStatus, Version
 from stickman.runlog import RunLog, shorten
 from stickman.settings import ConfigError, QCSettings, RetrySettings
 
@@ -81,11 +82,17 @@ class RunStopped(Exception):
 
 
 class RunControl:
-    """Whether the run is stopping, and why. The first reason is the one reported."""
+    """Whether the run is stopping, and why. The first reason is the one reported.
 
-    def __init__(self) -> None:
+    It is also the circuit breaker (spec §9.5): temporary errors in a row are counted per kind of
+    call (`image`, `vision`, `llm`), a success resets only its own kind's count, and any count reaching
+    `circuit_breaker` stops the run. So an outage of one model trips it while the others still answer."""
+
+    def __init__(self, circuit_breaker: int) -> None:
         self.reason: StopReason | None = None
         self.detail = ""
+        self._limit = circuit_breaker
+        self._in_a_row: dict[str, int] = {}
 
     def stop(self, reason: StopReason, detail: str = "") -> None:
         if self.reason is None:
@@ -95,21 +102,47 @@ class RunControl:
         if self.reason is not None:
             raise RunStopped(str(self.reason))
 
+    def transient(self, kind: str) -> None:
+        """One attempt of a `kind` call ended in a temporary error."""
+        count = self._in_a_row.get(kind, 0) + 1
+        self._in_a_row[kind] = count
+        if count >= self._limit:
+            self.stop(StopReason.CIRCUIT_BREAKER, f"{count} temporary errors in a row ({kind} calls)")
 
-class CircuitBreaker:
-    """Counts temporary errors in a row; a success resets the count (spec §9.5)."""
+    def success(self, kind: str) -> None:
+        self._in_a_row[kind] = 0
 
-    def __init__(self, limit: int) -> None:
-        self.limit = limit
-        self.count = 0
 
-    def failure(self) -> bool:
-        """Count one. True when the limit is reached."""
-        self.count += 1
-        return self.count >= self.limit
+class GuardedChat:
+    """The chat client of a run's plan rewrites (soften, redesign), which go through StageRunner, not
+    Renderer._call: no call starts once the run is stopping, and each attempt's temporary error counts
+    toward the circuit breaker as kind `llm` (spec §9.5)."""
 
-    def success(self) -> None:
-        self.count = 0
+    def __init__(self, client: ChatClient, control: RunControl, *, kind: str = "llm") -> None:
+        self._client = client
+        self._control = control
+        self._kind = kind
+
+    async def chat(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        *,
+        temperature: float = 0.4,
+        max_tokens: int = 4096,
+        response_format: dict[str, Any] | None = None,
+    ) -> LLMResult:
+        self._control.check()
+        try:
+            reply = await self._client.chat(
+                model, messages, temperature=temperature, max_tokens=max_tokens, response_format=response_format
+            )
+        except CFError as exc:
+            if exc.category is ErrorCategory.TRANSIENT:
+                self._control.transient(self._kind)
+            raise
+        self._control.success(self._kind)
+        return reply
 
 
 @dataclass(frozen=True)
@@ -125,6 +158,8 @@ STOPS: dict[ErrorCategory, StopReason] = {
     ErrorCategory.DAILY_LIMIT: StopReason.DAILY_LIMIT,
     ErrorCategory.AUTH: StopReason.AUTH,
 }
+# A vision call that ends in one of these (after its retries) never reached the checker (spec §9.4 [M4]).
+UNREACHABLE = (ErrorCategory.TRANSIENT, ErrorCategory.RATE_LIMITED)
 
 
 class Renderer:
@@ -144,7 +179,9 @@ class Renderer:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         now: Callable[[], datetime] = local_now,
         on_done: Callable[[str], None] | None = None,
+        control: RunControl | None = None,
     ) -> None:
+        """`control`: pass the one the rewriter's GuardedChat uses, so its errors reach the same breaker."""
         self._client = client
         self._store = store
         self._meter = meter
@@ -158,8 +195,7 @@ class Renderer:
         self._sleep = sleep
         self._now = now
         self._on_done = on_done
-        self.control = RunControl()
-        self._breaker = CircuitBreaker(retry.circuit_breaker)
+        self.control = control if control is not None else RunControl(retry.circuit_breaker)
         self.softened: list[str] = []  # units softened after a safety filter in this run
 
     async def run(self, jobs: Sequence[RenderJob]) -> RunResult:
@@ -193,11 +229,11 @@ class Renderer:
             while True:
                 step = next_step(
                     chain, qc_max=self._retry.qc_max, locked=job.unit.prompt_locked,
-                    softened=softened_by_qc(job.unit), refused=refused,
+                    softened=softened_by_qc(job.unit), refused=refused, fingerprint=job.fingerprint,
                 )
                 refused = False
                 if isinstance(step, Finish):
-                    self._finish(job, step, error)
+                    self._finish(job, step.status, step.current, error)
                     return
                 if isinstance(step, Check):
                     try:
@@ -205,14 +241,23 @@ class Renderer:
                     except (OSError, ImageDecodeError) as exc:
                         self._store.set_status(unit_id, "failed", error=f"bad_image: can't read {chain[-1].file}: {exc}")
                         return
+                    except CFError as exc:
+                        if exc.category in STOPS:
+                            raise
+                        # The checker couldn't be reached: the image stays unchecked (qc null), and
+                        # the next run checks it again without a new image (spec §9.4 [M4]).
+                        self._store.set_status(unit_id, "failed", error=self._error_text(exc))
+                        return
                     self._store.set_qc(unit_id, step.v, qc)
                     continue
                 if step.rewrite is not None:
                     try:
                         job = await self._rewrite(job, step)
                     except RewriteFailed as exc:
+                        # Nothing was written, so plan.yaml still holds the design the chain shows.
                         failure = f"rewrite failed: {shorten(self._log.mask(str(exc)), ERROR_CHARS)}"
-                        self._finish(job, finish_step(chain), f"{error}; {failure}" if error else failure)
+                        done = finish_step(chain, job.fingerprint)
+                        self._finish(job, done.status, done.current, f"{error}; {failure}" if error else failure)
                         return
                 attempt = self._builder.retry(job, step.reasons) if step.reasons else job
                 try:
@@ -243,34 +288,50 @@ class Renderer:
             self._store.set_status(unit_id, "planned")
 
     def _failed(self, job: RenderJob, chain: list[Version], error: str) -> None:
-        """An API error (after its retries) or unreadable bytes. With no image the unit is failed;
-        otherwise its best image so far goes to review."""
-        if chain:
-            self._finish(job, finish_step(chain), error)
-        else:
+        """An API error (after its retries) or unreadable bytes. With no image the unit is failed.
+        With an image of the unit's latest design, its best one goes to review. With images of an older
+        design only (a rewrite was written, its image never came), it is failed with no current version,
+        so the next run renders the new design afresh."""
+        if not chain:
             self._store.set_status(job.unit_id, "failed", error=error)
+            return
+        done = finish_step(chain, job.fingerprint)
+        if done.current is None:
+            self._finish(job, "failed", None, error)
+        else:
+            self._finish(job, done.status, done.current, error)
 
     def _error_text(self, exc: CFError) -> str:
         # Masked before the cut, which could split a secret.
         return f"{exc.category}: {shorten(self._log.mask(exc.message), ERROR_CHARS)}"
 
     async def _rewrite(self, job: RenderJob, step: Render) -> RenderJob:
-        """Soften or redesign the unit with the LLM (spec §7.5); the new job has its new fields."""
+        """Soften or redesign the unit with the LLM (spec §7.5); the new job has its new fields. None
+        starts once the run is stopping. The new job is built before plan.yaml is written, so a unit
+        whose new request can't be made is never written."""
+        self.control.check()
         if self._rewriter is None:
             raise RewriteFailed("no plan rewriter in this run")
+        built: list[RenderJob] = []
+
+        def check(unit: PlanUnit) -> None:
+            try:
+                built.append(self._builder.job(unit))
+            except (JobError, ConfigError) as exc:
+                raise RewriteFailed(str(exc)) from exc
+
         rewrite = self._rewriter.soften if step.rewrite == "soften" else self._rewriter.redesign
         try:
-            unit = await rewrite(job.unit_id, step.notes)
+            unit = await rewrite(job.unit_id, step.notes, check)
         except CFError as exc:
             if exc.category in STOPS:
                 raise
             raise RewriteFailed(self._error_text(exc)) from exc
         if step.rewrite == "soften":
             self.softened.append(job.unit_id)
-        try:
-            return self._builder.job(unit)
-        except (JobError, ConfigError) as exc:
-            raise RewriteFailed(str(exc)) from exc
+        if not built or built[-1].unit != unit:  # a rewriter that didn't check the unit it wrote
+            check(unit)
+        return built[-1]
 
     async def _call(
         self,
@@ -283,8 +344,9 @@ class Renderer:
         fields: dict[str, Any],
         cost_of: Callable[[Any], float | None] | None = None,
     ) -> Metered[Any]:
-        """One API call: budget-checked and ledgered by the meter, and logged here when it fails. The
-        breaker counts temporary errors of every kind of call (spec §9.5)."""
+        """One image or vision call: budget-checked and ledgered by the meter, and logged here when it
+        fails. The breaker counts its temporary errors under its kind (spec §9.5); the rewrites' LLM
+        calls are counted by GuardedChat."""
         self.control.check()
         started = time.perf_counter()
         try:
@@ -298,10 +360,10 @@ class Renderer:
                 status=exc.status, message=shorten(self._log.mask(exc.message)),  # masked before the cut
                 billing=billing_of(exc), usd=estimate,
             )
-            if exc.category is ErrorCategory.TRANSIENT and self._breaker.failure():
-                self.control.stop(StopReason.CIRCUIT_BREAKER, f"{self._breaker.count} temporary errors in a row")
+            if exc.category is ErrorCategory.TRANSIENT:
+                self.control.transient(kind)
             raise
-        self._breaker.success()
+        self.control.success(kind)
         return metered
 
     def _image_fields(self, job: RenderJob) -> dict[str, Any]:
@@ -381,7 +443,9 @@ class Renderer:
 
     async def _vision(self, job: RenderJob, image: Image.Image) -> tuple[VisionReport | None, str | None]:
         """Up to VISION_ATTEMPTS answers; the second sees the first one's errors (spec §9.4). The daily
-        limit and a rejected token stop the run; any other failure is the result's vision_error."""
+        limit and a rejected token stop the run. A checker that couldn't be reached (temporary errors or
+        rate limits past their retries) raises its CFError, so the image stays unchecked. A checker that
+        answered unusably (an invalid reply twice, bad_request, refused) is the result's vision_error."""
         reference = job.vision_reference
         prompt = vision_prompt(job.expected, reference=reference is not None)
         messages = vision_messages(prompt, vision_png(image), reference.data if reference is not None else None)
@@ -405,7 +469,7 @@ class Renderer:
                     sleep=self._sleep,
                 )
             except CFError as exc:
-                if exc.category in STOPS:
+                if exc.category in STOPS or exc.category in UNREACHABLE:
                     raise
                 return None, self._error_text(exc)
             reply: LLMResult = metered.result
@@ -422,13 +486,17 @@ class Renderer:
             messages = retry_messages(messages, reply.text, errors)
         return None, "invalid reply: " + "; ".join(errors[:3])
 
-    def _finish(self, job: RenderJob, step: Finish, error: str | None) -> None:
+    def _finish(self, job: RenderJob, status: UnitStatus, current: int | None, error: str | None) -> None:
         """The final status, then the current copy images/<stem>.png. A kill between the two is put
-        right by recover() (spec §5.2 [M3])."""
-        self._store.finish(job.unit_id, step.status, current=step.current,
-                           error=error if step.status == "needs_review" else None)
+        right by recover() (spec §5.2 [M3]). `current` None: no version shows the unit's latest design,
+        so it has no current version and no current copy (its versions stay in _history)."""
+        self._store.finish(job.unit_id, status, current=current, clear_current=current is None,
+                           error=error if status in ("needs_review", "failed") else None)
         unit = self._store.unit(job.unit_id)
         version = unit.version(unit.current_version) if unit.current_version is not None else None
+        project = self._store.project_dir
+        copy = project / "images" / f"{job.stem}.png"
         if version is not None:
-            project = self._store.project_dir
-            safe_write(project / "images" / f"{job.stem}.png", (project / version.file).read_bytes())
+            safe_write(copy, (project / version.file).read_bytes())
+        else:
+            copy.unlink(missing_ok=True)

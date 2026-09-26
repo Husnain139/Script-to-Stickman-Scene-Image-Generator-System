@@ -124,11 +124,17 @@ class StateStore:
         version.qc = qc
         self.save()
 
-    def finish(self, unit_id: str, status: UnitStatus, *, current: int | None, error: str | None = None) -> None:
-        """A unit's final status after QC. `current` None keeps the current version as it is."""
+    def finish(
+        self, unit_id: str, status: UnitStatus, *, current: int | None, clear_current: bool = False,
+        error: str | None = None,
+    ) -> None:
+        """A unit's final status after QC. `current` None keeps the current version as it is, unless
+        `clear_current`: then the unit has none (no version shows its latest design); the versions stay."""
         unit = self.unit(unit_id)
         unit.status = status
-        if current is not None:
+        if clear_current:
+            unit.current_version = None
+        elif current is not None:
             unit.current_version = current
         unit.error = error
         self.save()
