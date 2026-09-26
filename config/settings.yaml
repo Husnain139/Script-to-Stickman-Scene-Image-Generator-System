@@ -1,0 +1,73 @@
+# stickman settings (spec §2.3). Every key is optional; omitted keys use these defaults.
+schema_version: 1
+account:
+  plan: free                  # free | paid — daily-limit stop only applies on free
+input:
+  max_minutes: 5              # design limit; longer scripts run with a warning
+project:
+  recent_hours: 24            # generate/resume/regen/export need -p if >1 project changed in this window
+timing:
+  fallback_wps: 2.5           # words per second when pace can't be measured
+  min_pace_lines: 5
+merge:
+  max_lines: 3
+  min_scene_seconds: 0        # 0 = off
+split:
+  split_seconds: 7.0
+  split_words: 20
+  min_part_seconds: 2.5
+  max_parts: 2                # v1 accepts only 2
+llm:
+  planner_model: "@cf/openai/gpt-oss-120b"
+  fallback_model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+  vision_model: "@cf/qwen/qwen3.8-27b"
+  batch_size: 8
+  temperature: 0.4
+image:
+  model: "@cf/black-forest-labs/flux-2-klein-4b"   # free-plan default (user decision 2026-09-23); M5 may switch to 9B
+  steps: 25                   # sent only to models that accept it (FLUX.2 dev)
+  use_references: true
+  sizes:
+    "16:9": [1920, 1088]      # 1080 is silently rounded to 1072 by FLUX.2 (M0); export crops to 1920x1080
+    "9:16": [1088, 1920]
+  sheet_size: [768, 1024]
+  anchor_size: [1024, 768]
+  ref_max_side: 512
+render:
+  concurrency: 4
+  timeout_s: 120              # replace with a measured value after M5
+  est_seconds_per_image: 10
+retry:
+  rate_limit_max: 6
+  transient_max: 3
+  qc_max: 2
+  circuit_breaker: 5
+budget:
+  weekly_usd: 15.0            # usage only; the plan fee is not included
+  warn_ratio: 0.8
+  expected_retry_rate: 0.25
+qc:
+  near_white_lum: 215
+  color_sat: 0.25
+  max_color_fraction: 0.01
+  min_white_fraction: 0.55
+  black_lum: 50
+  max_black_blob_fraction: 0.06
+  min_ink_fraction: 0.005
+  uniform_std_max: 6
+  blur_lap_var_min: 15
+  min_idea_score: 3
+test:
+  count: 3
+bootstrap:
+  anchor_candidates: 4
+  model: "@cf/black-forest-labs/flux-2-klein-9b"  # dev is unusable synchronously (M0: HTTP 408 timeouts)
+export:
+  fps: 30
+  zoom: false
+  zoom_max: 1.06
+  captions: corrected         # source | corrected
+  caption_max_chars: 42
+review:
+  host: 127.0.0.1             # must stay 127.0.0.1
+  port: 8765
