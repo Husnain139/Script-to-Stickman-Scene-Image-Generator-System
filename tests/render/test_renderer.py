@@ -298,6 +298,24 @@ def test_an_unreadable_image_is_made_again_next_run(tmp_path, plan_data, fake_im
     assert (unit.status, unit.current_version) == ("generated", 2)
 
 
+def test_an_os_error_elsewhere_in_the_check_keeps_the_current_version(tmp_path, plan_data, fake_images, monkeypatch):
+    run = Run(tmp_path, plan_data, fake_images(), qc=QCSettings(vision=False))
+    run.go(run.jobs[:1])
+    unit = run.store.unit("001")
+    unit.versions[0].qc = None  # it still needs its check; its file reads fine
+    run.store.save()
+
+    def disk_full(image, settings):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("stickman.render.calls.pixel_check", disk_full)
+    with pytest.raises(OSError, match="No space left"):
+        asyncio.run(run.make_renderer(fake_images()).run(run.jobs[:1]))
+    unit = StateStore.load(run.project).unit("001")
+    assert unit.current_version == 1 and [v.v for v in unit.versions] == [1]
+    assert (run.project / "images" / "001_00-00.0.png").exists()
+
+
 def test_reference_images_are_sent_in_slot_order_and_recorded(tmp_path, plan_data, fake_images):
     for relative, size in (("library/style/anchor_v1_ref.png", (512, 384)), ("library/mascot/ref_v1.png", (384, 512))):
         path = tmp_path / relative

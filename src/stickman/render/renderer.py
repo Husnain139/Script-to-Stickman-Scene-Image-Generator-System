@@ -154,13 +154,18 @@ class Renderer:
                     self._finish(job, step.status, step.current, error)
                     return
                 if isinstance(step, Check):
+                    image = images.get(step.v)
+                    if image is None:  # made by an earlier run
+                        try:
+                            image = self._read(chain[-1])
+                        except (OSError, ImageDecodeError) as exc:
+                            # The file can't be read, so no version counts as current: the next run
+                            # makes a new image instead of failing the same check again. Any other
+                            # OSError in the check (a run-log or ledger write) propagates instead.
+                            self._finish(job, "failed", None, f"bad_image: can't read {chain[-1].file}: {exc}")
+                            return
                     try:
-                        qc = await self._check(job, chain[-1], images.get(step.v))
-                    except (OSError, ImageDecodeError) as exc:
-                        # The file can't be checked, so no version counts as current: the next run
-                        # makes a new image instead of failing the same check again.
-                        self._finish(job, "failed", None, f"bad_image: can't read {chain[-1].file}: {exc}")
-                        return
+                        qc = await self._check(job, image)
                     except CFError as exc:
                         if exc.category in STOPS:
                             raise
@@ -287,9 +292,10 @@ class Renderer:
         self._store.add_version(job.unit_id, version, status="generating")
         return version, image
 
-    async def _check(self, job: RenderJob, version: Version, image: Image.Image | None) -> QCResult:
-        if image is None:  # made by an earlier run
-            image = decode_image((self._store.project_dir / version.file).read_bytes())
+    def _read(self, version: Version) -> Image.Image:
+        return decode_image((self._store.project_dir / version.file).read_bytes())
+
+    async def _check(self, job: RenderJob, image: Image.Image) -> QCResult:
         return await self._calls.check(image, expected=job.expected, reference=job.vision_reference, unit=job.unit_id)
 
     def _finish(self, job: RenderJob, status: UnitStatus, current: int | None, error: str | None) -> None:
