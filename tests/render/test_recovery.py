@@ -2,6 +2,8 @@ from datetime import datetime, timedelta, timezone
 
 from PIL import Image
 
+from stickman.qc.decide import decide
+from stickman.qc.pixel import PixelResult
 from stickman.render.images import encode_png
 from stickman.render.recovery import ExpectedUnit, recover
 from stickman.render.state import StateStore, Version
@@ -113,3 +115,20 @@ def test_an_approved_unit_is_compared_with_its_approved_version(tmp_path):
     assert store.unit("006a").status == "stale"
     recover(store, EXPECTED)
     assert store.unit("006a").status == "approved"
+
+
+def failing_qc():
+    pixel = PixelResult(reason="empty", lum_std=0.0, lum_mean=255.0, ink_fraction=0.0, lap_var=0.0,
+                        white_fraction=1.0, colour_fraction=0.0, black_fraction=0.0)
+    return decide(pixel, None, expected_figures=1, min_idea_score=3)
+
+
+def test_a_stale_unit_whose_current_version_failed_qc_goes_back_to_needs_review(tmp_path):
+    history_image(tmp_path)
+    store = StateStore.load(tmp_path)
+    store.add_version("006a", version(qc=failing_qc()), status="needs_review")
+    recover(store, CHANGED)
+    assert store.unit("006a").status == "stale"
+    notes = recover(store, EXPECTED)
+    assert store.unit("006a").status == "needs_review"
+    assert "No longer stale: 006a" in notes

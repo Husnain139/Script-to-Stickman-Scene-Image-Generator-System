@@ -29,7 +29,7 @@ def test_an_api_jpeg_is_saved_as_png_with_its_metadata(tmp_path, jpeg):
     path.write_bytes(data)
     assert read_metadata(path) == metadata
     with Image.open(path) as saved:
-        assert saved.size == (64, 36)
+        assert saved.size == (960, 544)
 
 
 @pytest.mark.parametrize("data", [b"<html>oops</html>", b"\xff\xd8\xff" + b"\x00" * 20])

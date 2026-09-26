@@ -1,6 +1,6 @@
 import pytest
 
-from stickman.config_files import load_mascot, load_style, load_visual_rules
+from stickman.config_files import TEXT_FREE, load_mascot, load_style, load_visual_rules
 from stickman.settings import ConfigError
 
 
@@ -46,3 +46,10 @@ def test_a_config_file_that_cannot_be_read_names_the_file(tmp_path):
     (tmp_path / "config" / "style.yaml").mkdir(parents=True)  # a folder where the file should be
     with pytest.raises(ConfigError, match=r"style\.yaml"):
         load_style(tmp_path)
+
+
+def test_the_text_free_table_defaults_to_the_packaged_one(tmp_path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "visual_rules.yaml").write_text("schema_version: 1\nrules: [one rule]\n", encoding="utf-8")
+    assert load_visual_rules(tmp_path).text_free == TEXT_FREE  # a config file from before M4
+    assert load_visual_rules(tmp_path / "empty").text_free == TEXT_FREE  # the packaged defaults file

@@ -3,7 +3,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from stickman.render.state import ProjectState, StateError, StateStore, Version
+from stickman.qc.decide import decide
+from stickman.qc.pixel import PixelResult
+from stickman.render.state import ProjectState, StateError, StateStore, Version, needs_work, unchecked
 
 PK = timezone(timedelta(hours=5))
 KLEIN_4B = "@cf/black-forest-labs/flux-2-klein-4b"
@@ -65,3 +67,46 @@ def test_version_numbers_skip_files_already_in_the_history(tmp_path):
     (history / "006b_v7.png").write_bytes(b"another unit")
     assert store.next_version("006a") == 4
     assert store.next_version("001") == 1
+
+
+def passing_qc():
+    pixel = PixelResult(reason=None, lum_std=30.0, lum_mean=250.0, ink_fraction=0.02, lap_var=900.0,
+                        white_fraction=0.97, colour_fraction=0.0, black_fraction=0.01)
+    return decide(pixel, None, expected_figures=1, min_idea_score=3)
+
+
+def test_a_qc_result_is_saved_with_its_version(tmp_path):
+    store = StateStore.load(tmp_path)
+    store.add_version("006a", version(), status="generating")
+    store.set_qc("006a", 1, passing_qc())
+    saved = StateStore.load(tmp_path).state.units["006a"]
+    assert saved.versions[0].qc == passing_qc()
+    assert json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))["units"]["006a"]["versions"][0]["qc"]["passed"] is True
+
+
+def test_finish_sets_the_status_the_current_version_and_the_error(tmp_path):
+    store = StateStore.load(tmp_path)
+    store.add_version("006a", version(1), status="generating")
+    store.add_version("006a", version(2), status="generating")
+    store.finish("006a", "needs_review", current=1, error="rewrite failed: plan.yaml changed")
+    unit = StateStore.load(tmp_path).state.units["006a"]
+    assert (unit.status, unit.current_version, unit.error) == ("needs_review", 1, "rewrite failed: plan.yaml changed")
+    store.finish("006a", "needs_review", current=None)
+    assert StateStore.load(tmp_path).state.units["006a"].current_version == 1
+    store.finish("006a", "needs_review", current=None, clear_current=True, error="refused: flagged")
+    unit = StateStore.load(tmp_path).state.units["006a"]
+    assert (unit.current_version, [v.v for v in unit.versions], unit.error) == (None, [1, 2], "refused: flagged")
+
+
+def test_units_a_run_takes_up(tmp_path):
+    store = StateStore.load(tmp_path)
+    assert needs_work(store.unit("001"))  # planned
+    store.add_version("006a", version(), status="generated")
+    assert unchecked(store.unit("006a")) and needs_work(store.unit("006a"))  # an image made before QC
+    store.set_qc("006a", 1, passing_qc())
+    assert not unchecked(store.unit("006a")) and not needs_work(store.unit("006a"))
+    store.set_status("006a", "failed", error="transient: bad gateway")
+    assert needs_work(store.unit("006a"))
+    for status in ("needs_review", "approved", "stale", "generating"):
+        store.set_status("006a", status)
+        assert not needs_work(store.unit("006a")), status

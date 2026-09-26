@@ -7,9 +7,11 @@ import functools
 import inspect
 import io
 import json
+import re
+import types
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from stickman.cf.client import ImageResult, LLMResult
 from stickman.plan.llm import StageRunner
@@ -24,12 +26,133 @@ def _plain_console(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-@functools.lru_cache
-def jpeg_bytes(width=64, height=36):
-    """A small white JPEG, like the base64 JPEG Klein returns (M0)."""
+DRAWING_SIZE = (960, 544)  # half of 1920x1088
+INK = (0, 0, 0)
+PAPER = (255, 255, 255)
+
+
+def _figure(draw, cx, ground, scale=1.0, *, ink=INK, width=3):
+    """A stick figure standing on `ground`: round head, dot eyes, three hair strokes, line body."""
+    head = 34 * scale
+    neck = ground - 200 * scale
+    hips = ground - 90 * scale
+    draw.ellipse((cx - head, neck - 2 * head, cx + head, neck), outline=ink, width=width)
+    for dx in (-12, 12):
+        draw.ellipse((cx + dx * scale - 3, neck - head - 6, cx + dx * scale + 3, neck - head), fill=ink)
+    for dx in (-8, 0, 8):
+        draw.arc((cx + dx * scale, neck - 2 * head - 18, cx + dx * scale + 18, neck - 2 * head + 4), 180, 300,
+                 fill=ink, width=width)
+    draw.line((cx, neck, cx, hips), fill=ink, width=width)
+    draw.line((cx, neck + 30 * scale, cx - 55 * scale, neck + 90 * scale), fill=ink, width=width)
+    draw.line((cx, neck + 30 * scale, cx + 55 * scale, neck + 70 * scale), fill=ink, width=width)
+    draw.line((cx, hips, cx - 35 * scale, ground - 8), fill=ink, width=width)
+    draw.line((cx, hips, cx + 35 * scale, ground - 8), fill=ink, width=width)
+    for fx in (cx - 35 * scale, cx + 35 * scale):
+        draw.ellipse((fx - 16 * scale, ground - 14, fx + 16 * scale, ground), outline=ink, width=width)
+
+
+def _scene(background=PAPER, ink=INK, size=DRAWING_SIZE):
+    """Two stick figures on a ground line under a small sun: the clean case."""
+    image = Image.new("RGB", size, background)
+    draw = ImageDraw.Draw(image)
+    w, h = size
+    ground = round(h * 0.85)
+    scale = h / DRAWING_SIZE[1]
+    draw.line((round(w * 0.05), ground, round(w * 0.95), ground), fill=ink, width=3)
+    _figure(draw, round(w * 0.35), ground, scale, ink=ink)
+    _figure(draw, round(w * 0.65), ground, scale, ink=ink)
+    sun = (round(w * 0.85), round(h * 0.08))
+    draw.ellipse((*sun, sun[0] + 50 * scale, sun[1] + 50 * scale), outline=ink, width=3)
+    return image, draw
+
+
+def _shoes_and_tie():
+    image, draw = _scene()
+    for cx in (336, 624):
+        draw.polygon([(cx - 8, 330), (cx + 8, 330), (cx + 12, 380), (cx, 392), (cx - 12, 380)], fill=INK)
+        for fx in (cx - 35, cx + 35):
+            draw.ellipse((fx - 18, 448, fx + 18, 464), fill=INK)
+    return image
+
+
+def _with_text():
+    image, draw = _scene()
+    draw.text((80, 40), "THE FIRST SLEEP", fill=INK, font=ImageFont.load_default(size=48))
+    return image
+
+
+def _colour():
+    image, draw = _scene()
+    draw.ellipse((780, 30, 900, 150), fill=(230, 40, 30))
+    return image
+
+
+def _big_black_blob():
+    image, draw = _scene()
+    draw.rectangle((40, 40, 300, 260), fill=INK)
+    return image
+
+
+def _blurred():
+    """Large dark shapes, blurred until no edge is left: what a safety filter's blur looks like."""
+    image = Image.new("RGB", DRAWING_SIZE, PAPER)
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((200, 100, 460, 360), fill=(40, 40, 40))
+    draw.rectangle((560, 150, 820, 470), fill=(40, 40, 40))
+    return image.filter(ImageFilter.GaussianBlur(40))
+
+
+def _almost_empty():
+    image = Image.new("RGB", DRAWING_SIZE, PAPER)
+    draw = ImageDraw.Draw(image)
+    draw.line((100, 460, 300, 460), fill=INK, width=2)
+    draw.line((600, 200, 640, 180), fill=INK, width=2)
+    return image
+
+
+def _uniform(colour):
+    return lambda: Image.new("RGB", DRAWING_SIZE, colour)
+
+
+DRAWINGS = types.SimpleNamespace(
+    clean=lambda size=DRAWING_SIZE: _scene(size=size)[0],
+    shoes_and_tie=_shoes_and_tie,
+    with_text=_with_text,
+    colour=_colour,
+    filled_background=lambda: _scene(background=(120, 120, 120))[0],
+    dark_with_detail=lambda: _scene(background=(10, 10, 10), ink=(255, 255, 255))[0],
+    big_black_blob=_big_black_blob,
+    all_black=_uniform((0, 0, 0)),
+    grey=_uniform((128, 128, 128)),
+    white=_uniform((255, 255, 255)),
+    cream=_uniform((250, 243, 224)),
+    blurred=_blurred,
+    almost_empty=_almost_empty,
+)
+
+
+@pytest.fixture
+def drawings():
+    """Fixture drawings for the pixel checks (spec §17), made in code so each case is exact."""
+    return DRAWINGS
+
+
+def to_jpeg(image, quality=90):
     buffer = io.BytesIO()
-    Image.new("RGB", (width, height), "white").save(buffer, format="JPEG")
+    image.save(buffer, format="JPEG", quality=quality)
     return buffer.getvalue()
+
+
+@functools.lru_cache
+def jpeg_bytes():
+    """A clean stick-figure JPEG, like the base64 JPEG Klein returns (M0). It passes the pixel checks."""
+    return to_jpeg(DRAWINGS.clean())
+
+
+@functools.lru_cache
+def filled_jpeg_bytes():
+    """A grey-background JPEG: it fails the pixel checks as background_filled."""
+    return to_jpeg(DRAWINGS.filled_background())
 
 
 @pytest.fixture
@@ -82,18 +205,47 @@ def fake_chat():
     return FakeChat
 
 
+GOOD_REPORT = {"has_text": False, "text_seen": "", "style_ok": True, "anatomy_ok": True, "watermark_like": False,
+               "character_count": 1, "matches_visual_idea": 4, "mascot_matches_sheet": None, "notes": ""}
+
+
+def vision_reply(**changes):
+    """A vision report the way qwen writes it: a blank line, then fenced JSON (M0)."""
+    return "\n\n```json\n" + json.dumps({**GOOD_REPORT, **changes}) + "\n```"
+
+
+def expected_figures(messages):
+    text = next(part["text"] for part in messages[0]["content"] if part["type"] == "text")
+    return int(re.search(r"Expected figures: (?:\d+-)?(\d+)", text).group(1))  # the most, for a range
+
+
+def passing_vision(model, messages):
+    return vision_reply(character_count=expected_figures(messages))
+
+
+@pytest.fixture
+def vision():
+    return types.SimpleNamespace(reply=vision_reply, passing=passing_vision, figures=expected_figures)
+
+
 class FakeImages:
-    """Stands in for CloudflareClient.generate_image (and `async with`).
+    """Stands in for CloudflareClient.generate_image and chat() (and `async with`).
 
     `outcomes` is None (every call gets a small JPEG), a list (one outcome per call, in order), or a
     function `(call) -> outcome`. An outcome is image bytes, an exception to raise, or an awaitable
     that gives image bytes (a slow request).
+
+    `chat` is a function `(model, messages) -> reply` for the vision model. A reply is text, an
+    LLMResult, an exception to raise, or an awaitable giving one of those. The default passes every
+    vision check, with the figure count the prompt expects.
     """
 
-    def __init__(self, outcomes=None, *, neurons=207.59):
+    def __init__(self, outcomes=None, *, neurons=207.59, chat=None):
         self._outcomes = list(outcomes) if isinstance(outcomes, (list, tuple)) else outcomes
         self._neurons = neurons
+        self._chat = chat or passing_vision
         self.calls = []
+        self.chat_calls = []
         self.active = 0
         self.max_active = 0
 
@@ -120,6 +272,21 @@ class FakeImages:
         if isinstance(outcome, BaseException):
             raise outcome
         return ImageResult(image_bytes=outcome, neurons=self._neurons, request_id=f"req-{number}")
+
+    async def chat(self, model, messages, *, temperature=0.4, max_tokens=4096, response_format=None):
+        self.chat_calls.append({"model": model, "messages": messages, "temperature": temperature,
+                                "max_tokens": max_tokens, "response_format": response_format})
+        await asyncio.sleep(0)
+        reply = self._chat(model, messages)
+        if inspect.isawaitable(reply):
+            reply = await reply
+        if isinstance(reply, BaseException):
+            raise reply
+        if isinstance(reply, LLMResult):
+            return reply
+        return LLMResult(text=reply, input_tokens=1300, output_tokens=400,
+                         raw={"choices": [{"finish_reason": "stop"}]}, neurons=110.0,
+                         request_id=f"chat-{len(self.chat_calls)}")
 
     def _next(self, call):
         if self._outcomes is None:

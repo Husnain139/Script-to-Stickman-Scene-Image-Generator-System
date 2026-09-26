@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from stickman.fsutil import safe_write
 from stickman.render.images import HISTORY_DIR, history_files, read_metadata
-from stickman.render.state import STATE_FILE, StateStore, Version
+from stickman.render.state import STATE_FILE, StateStore, UnitState, UnitStatus, Version
 
 HAS_IMAGE = ("generated", "needs_review", "approved", "stale")
 
@@ -84,7 +84,7 @@ def _adopt_saved_images(store: StateStore) -> tuple[list[str], list[str]]:
         unit.versions = sorted([*unit.versions, *found], key=lambda item: item.v)
         if unit.status in ("planned", "failed"):
             unit.current_version = found[-1].v
-            unit.status = "generated"  # M4: its QC result decides
+            unit.status = "generated"  # with no QC yet: the run checks it (state.needs_work)
             unit.error = None
     return adopted, unknown
 
@@ -138,7 +138,17 @@ def _mark_stale(store: StateStore, expected: Mapping[str, ExpectedUnit]) -> tupl
                 unit.status = "stale"
                 stale.append(unit_id)
         elif unit.status == "stale":
-            # M4: needs_review when the current version failed QC
-            unit.status = "approved" if unit.approved_version is not None else "generated"
+            unit.status = _status_again(unit)
             fresh.append(unit_id)
     return stale, fresh
+
+
+def _status_again(unit: UnitState) -> UnitStatus:
+    """A stale unit that matches its plan again: approved if it has an approved version, needs_review
+    if its current version failed QC, else generated (spec §5.2)."""
+    if unit.approved_version is not None:
+        return "approved"
+    current = unit.version(unit.current_version) if unit.current_version is not None else None
+    if current is not None and current.qc is not None and not current.qc.passed:
+        return "needs_review"
+    return "generated"

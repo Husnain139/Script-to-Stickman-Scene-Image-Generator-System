@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 
 from stickman.fsutil import safe_write
+from stickman.qc.decide import QCResult
 from stickman.render.images import history_files
 
 STATE_FILE = "state.json"
@@ -35,7 +36,7 @@ class Version(_Model):
     prompt_sent: str
     retry_of: int | None = None
     retry_reason: str | None = None
-    qc: dict[str, Any] | None = None  # M4
+    qc: QCResult | None = None  # [M4] null until QC has checked this version
     est_cost_usd: float = Field(ge=0)
     latency_s: float = Field(ge=0)
     created: AwareDatetime
@@ -50,6 +51,20 @@ class UnitState(_Model):
 
     def version(self, v: int) -> Version | None:
         return next((item for item in self.versions if item.v == v), None)
+
+
+TO_RENDER = ("planned", "failed")
+
+
+def unchecked(unit: UnitState) -> bool:
+    """The unit's current image has no QC result: made before M4, or saved just before a kill."""
+    version = unit.version(unit.current_version) if unit.current_version is not None else None
+    return version is not None and version.qc is None
+
+
+def needs_work(unit: UnitState) -> bool:
+    """The units a run takes up: no image yet or a failed one, or a generated image QC hasn't checked."""
+    return unit.status in TO_RENDER or (unit.status == "generated" and unchecked(unit))
 
 
 class ProjectState(_Model):
@@ -100,6 +115,28 @@ class StateStore:
         unit.current_version = version.v
         unit.status = status
         unit.error = None
+        self.save()
+
+    def set_qc(self, unit_id: str, v: int, qc: QCResult) -> None:
+        version = self.unit(unit_id).version(v)
+        if version is None:
+            raise KeyError(f"{unit_id} has no version {v}")
+        version.qc = qc
+        self.save()
+
+    def finish(
+        self, unit_id: str, status: UnitStatus, *, current: int | None, clear_current: bool = False,
+        error: str | None = None,
+    ) -> None:
+        """A unit's final status after QC. `current` None keeps the current version as it is, unless
+        `clear_current`: then the unit has none (no version shows its latest design); the versions stay."""
+        unit = self.unit(unit_id)
+        unit.status = status
+        if clear_current:
+            unit.current_version = None
+        elif current is not None:
+            unit.current_version = current
+        unit.error = error
         self.save()
 
     def next_version(self, unit_id: str) -> int:
