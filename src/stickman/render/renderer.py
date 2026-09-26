@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -114,12 +114,16 @@ class Renderer:
         self._on_done = on_done
         self.control = control if control is not None else RunControl(retry.circuit_breaker)
         self.softened: list[str] = []  # units softened after a safety filter in this run
+        self._fresh: frozenset[str] = frozenset()  # units that start a new chain in this run
         self._calls = Calls(client, meter, log, self.control, retry=retry, qc=qc, vision_model=vision_model, sleep=sleep)
 
-    async def run(self, jobs: Sequence[RenderJob]) -> RunResult:
+    async def run(self, jobs: Sequence[RenderJob], *, fresh: Collection[str] = ()) -> RunResult:
         """Each job's unit, at most `concurrency` at once. A unit holds its slot for its whole chain, so
         vision calls share the image requests' limit (spec §10.3). Once the run is stopping, no new
-        request starts and the requests already out finish (spec §9.5)."""
+        request starts and the requests already out finish (spec §9.5). Units in `fresh` (regenerated from
+        the review page) start a new chain instead of continuing one; their earlier versions stay as a
+        record (spec §12.2 [M6])."""
+        self._fresh = frozenset(fresh)
         started = time.perf_counter()
         semaphore = asyncio.Semaphore(self._concurrency)
 
@@ -139,7 +143,8 @@ class Renderer:
         saved as it happens, so a run stopped or killed here continues the same chain next time."""
         unit_id = job.unit_id
         self._store.set_status(unit_id, "generating")
-        chain = chain_of(self._store.unit(unit_id), job.fingerprint)
+        # A regenerated unit starts a new chain; its earlier versions stay as a record (spec §12.2 [M6]).
+        chain = [] if unit_id in self._fresh else chain_of(self._store.unit(unit_id), job.fingerprint)
         images: dict[int, Image.Image] = {}  # images made in this run, by version, so QC needn't read them back
         refused = False
         error: str | None = None

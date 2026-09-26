@@ -757,3 +757,16 @@ def test_a_rewrites_llm_calls_are_ledgered_under_its_unit(tmp_path, plan_data, f
     run.go(run.jobs[:1])
     entries = [json.loads(line) for line in (tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [(e["kind"], e["unit"]) for e in entries if e["kind"] == "llm"] == [("llm", "001")]
+
+
+def test_a_fresh_unit_gets_a_new_chain_and_keeps_its_old_versions(tmp_path, plan_data, fake_images):
+    run = Run(tmp_path, plan_data, fake_images())
+    run.go(run.jobs[:1])
+    run.store.begin_regeneration("001")
+    later = fake_images()
+    asyncio.run(run.make_renderer(later).run(run.jobs[:1], fresh={"001"}))
+    unit = run.store.unit("001")
+    assert len(later.calls) == 1
+    assert [v.v for v in unit.versions] == [1, 2]
+    assert (unit.current_version, unit.compare_with, unit.status) == (2, 1, "generated")
+    assert unit.versions[1].retry_of is None  # a new chain, not a retry of v1

@@ -123,25 +123,35 @@ def _restore_current_images(store: StateStore, expected: Mapping[str, ExpectedUn
     return missing
 
 
+def stale_status(unit: UnitState, fingerprint: str) -> UnitStatus:
+    """The status a unit has once compared with `fingerprint` (spec §10.4), without changing it: stale
+    when the approved (else current) version was made from other fields, back from stale when it matches
+    again, otherwise unchanged. Units without an image are never stale."""
+    if unit.status not in HAS_IMAGE:
+        return unit.status
+    compared = unit.approved_version or unit.current_version
+    version = unit.version(compared) if compared is not None else None
+    if version is None:
+        return unit.status
+    if version.fingerprint != fingerprint:
+        return "stale"
+    return _status_again(unit) if unit.status == "stale" else unit.status
+
+
 def _mark_stale(store: StateStore, expected: Mapping[str, ExpectedUnit]) -> tuple[list[str], list[str]]:
     """spec §10.4: compared with the approved version when there is one, else the current one."""
     stale: list[str] = []
     fresh: list[str] = []
     for unit_id, want in expected.items():
         unit = store.state.units[unit_id]
-        if unit.status not in HAS_IMAGE:
+        status = stale_status(unit, want.fingerprint)
+        if status == unit.status:
             continue
-        compared = unit.approved_version or unit.current_version
-        version = unit.version(compared) if compared is not None else None
-        if version is None:
-            continue
-        if version.fingerprint != want.fingerprint:
-            if unit.status != "stale":
-                unit.status = "stale"
-                stale.append(unit_id)
-        elif unit.status == "stale":
-            unit.status = _status_again(unit)
+        if status == "stale":
+            stale.append(unit_id)
+        else:
             fresh.append(unit_id)
+        unit.status = status
     return stale, fresh
 
 

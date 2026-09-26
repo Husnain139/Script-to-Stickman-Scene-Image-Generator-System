@@ -48,6 +48,7 @@ class UnitState(_Model):
     approved_version: int | None = None
     versions: list[Version] = Field(default_factory=list)
     error: str | None = None  # [M3] the last API error of a unit that ended failed
+    compare_with: int | None = None  # [M6] shown beside the current version after a regeneration, until one is chosen
 
     def version(self, v: int) -> Version | None:
         return next((item for item in self.versions if item.v == v), None)
@@ -137,6 +138,44 @@ class StateStore:
         elif current is not None:
             unit.current_version = current
         unit.error = error
+        self.save()
+
+    def approve(self, unit_id: str) -> None:
+        unit = self.unit(unit_id)
+        if unit.current_version is None:
+            raise ValueError(f"{unit_id} has no image to approve")
+        unit.approved_version = unit.current_version
+        unit.status = "approved"
+        unit.compare_with = None
+        unit.error = None
+        self.save()
+
+    def select_version(self, unit_id: str, v: int) -> None:
+        """Make version v current (a history pick, or 1/2 in the side-by-side view, spec §12.2). The
+        approval stays only if v is the approved version; otherwise the status comes from v's QC."""
+        unit = self.unit(unit_id)
+        version = unit.version(v)
+        if version is None:
+            raise KeyError(f"{unit_id} has no version {v}")
+        unit.current_version = v
+        unit.compare_with = None
+        unit.error = None
+        if unit.approved_version is not None and unit.approved_version != v:
+            unit.approved_version = None
+        if unit.approved_version == v:
+            unit.status = "approved"
+        elif version.qc is not None and not version.qc.passed:
+            unit.status = "needs_review"
+        else:
+            unit.status = "generated"  # an unchecked version is checked by the next run
+        self.save()
+
+    def begin_regeneration(self, unit_id: str) -> None:
+        """Before a regeneration: the current version is kept to compare with the new one, and the
+        approval is cleared, since the approved image won't be the one shown."""
+        unit = self.unit(unit_id)
+        unit.compare_with = unit.current_version
+        unit.approved_version = None
         self.save()
 
     def next_version(self, unit_id: str) -> int:
