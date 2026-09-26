@@ -18,13 +18,17 @@ from rich.markup import escape
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 from ruamel.yaml.comments import CommentedMap
 
+from stickman.bootstrap.approve import ApprovalError, approve_anchor, approve_mascot
+from stickman.bootstrap.generate import CandidateJob, CandidateMaker, StepPlan, step_plan
+from stickman.bootstrap.store import BootstrapError, BootstrapStore, Candidate, Step, pending_step, ranked
 from stickman.budget import Budget
 from stickman.cf.client import CloudflareClient
 from stickman.cf.errors import CFError, ErrorCategory
+from stickman.config_files import MascotConfig, StyleConfig, load_mascot, load_style
 from stickman.ingest.parse import parse_duration, parse_script
 from stickman.ingest.timing import build_timeline
 from stickman.ledger import LEDGER_FILE, Ledger, utc_day_start
-from stickman.library import find_references
+from stickman.library import anchor_path, find_references
 from stickman.meter import Meter
 from stickman.plan.llm import PlanningError, StageRunner
 from stickman.plan.models import CastMember, Plan, PlanValidationError
@@ -38,13 +42,15 @@ from stickman.plan.planner import (
 )
 from stickman.plan.refresh import refresh_prompts, with_prompts
 from stickman.plan.store import LoadedPlan, PlanChangedError, load_plan, to_document, update_unit, write_plan
-from stickman.pricing import format_usd, llm_cost_usd, load_pricing, usd_neurons
+from stickman.pricing import PricingConfig, format_usd, llm_cost_usd, load_pricing, usd_neurons
 from stickman.project import ProjectError, check_unplanned, choose_project_dir, create_project, resolve_project, slugify
 from stickman.qc.vision import TYPICAL_TOKENS
+from stickman.render.calls import Calls
 from stickman.render.chain import chain_of
 from stickman.render.jobs import JobBuilder, JobError, RenderContext, RenderJob
 from stickman.render.lock import LockHeld, ProjectLock
 from stickman.render.recovery import recover
+from stickman.render.references import ReferenceFiles
 from stickman.render.renderer import GuardedChat, Renderer, RunControl, RunResult, StopReason
 from stickman.render.rewrite import PlanRewriter
 from stickman.render.state import StateError, StateStore, needs_work
@@ -344,7 +350,7 @@ def replan(
     console.print(escape(f"Replanned {unit}: {updated.visual_idea}"))
 
 
-OUTAGE_MESSAGE = "Possible outage — run `stickman resume` later."
+OUTAGE_MESSAGE = "Possible outage — run `stickman resume` later."  # what _exit_for prints for generate (tests use it)
 EXIT_INTERRUPTED = 130
 
 
@@ -378,6 +384,192 @@ def resume(
 ) -> None:
     """The same as generate: continue after a pause (daily limit, budget, outage) or a crash."""
     _generate(workspace, project, force=force, limit=limit)
+
+
+BOOTSTRAP_PROJECT = "bootstrap"  # the ledger's project for bootstrap calls
+STEP_NAMES: dict[str, str] = {"anchor": "style anchor", "mascot": "mascot sheet"}
+
+
+@app.command()
+def bootstrap(
+    candidates: int | None = typer.Option(
+        None, "--candidates", min=1,
+        help="How many candidates the current step should have; more than it has adds more. "
+             "Default: bootstrap.anchor_candidates, or bootstrap.mascot_candidates.",
+    ),
+    approve_anchor_n: int | None = typer.Option(None, "--approve-anchor", min=1, help="Approve this style-anchor candidate."),
+    approve_mascot_n: int | None = typer.Option(None, "--approve-mascot", min=1, help="Approve this mascot-sheet candidate."),
+    force: bool = typer.Option(False, "--force", help="Go on past the weekly budget."),
+    workspace: Path = typer.Option(Path("."), "--workspace", "-w", help="Workspace folder."),
+) -> None:
+    """Make the style anchor, then the mascot sheet (spec §8.1): run it, approve a candidate, run it again."""
+    root = workspace.resolve()
+    approving = approve_anchor_n is not None or approve_mascot_n is not None
+    try:
+        cfg = load_config(root, need_secrets=not approving)
+        style, mascot, pricing = load_style(root), load_mascot(root), load_pricing(root)
+    except ConfigError as exc:
+        console.print("Bootstrap")
+        _fail(str(exc), EXIT_CONFIG_ERROR)
+    console.print(f"Bootstrap: style v{style.style_version}")
+    if approve_anchor_n is not None and approve_mascot_n is not None:
+        _fail("Approve one candidate at a time.", EXIT_USER_ERROR)
+    try:
+        store = BootstrapStore.load(root, style.style_version)
+    except BootstrapError as exc:
+        _fail(f"{exc}. Nothing was changed.", EXIT_USER_ERROR)
+    store.folder.mkdir(parents=True, exist_ok=True)
+    lock = ProjectLock(store.folder)
+    try:
+        lock.acquire()
+    except LockHeld as exc:
+        _fail(f"{exc}. Let it finish, then run this again.\nIf no stickman is running, delete `{lock.path}`.", EXIT_USER_ERROR)
+    try:
+        if lock.removed_stale is not None:
+            console.print(f"[yellow]Removed a stale lock left by PID {lock.removed_stale}, which is no longer running.[/yellow]")
+        for note in store.recover():
+            console.print(escape(note))
+        if approve_anchor_n is not None:
+            _approve(cfg, store, mascot, "anchor", approve_anchor_n)
+        elif approve_mascot_n is not None:
+            _approve(cfg, store, mascot, "mascot", approve_mascot_n)
+        else:
+            _bootstrap_step(cfg, store, style, mascot, pricing, candidates=candidates, force=force)
+    except KeyboardInterrupt:
+        console.print("Stopped. Finished candidates are kept; run `stickman bootstrap` to continue.")
+        raise typer.Exit(EXIT_INTERRUPTED) from None
+    finally:
+        lock.release()
+
+
+def _approve(cfg: AppConfig, store: BootstrapStore, mascot: MascotConfig, step: Step, n: int) -> None:
+    max_side = cfg.settings.image.ref_max_side
+    previous = store.step(step).approved
+    try:
+        if step == "anchor":
+            written = approve_anchor(store, n, ref_max_side=max_side)
+        else:
+            written = approve_mascot(store, n, mascot=mascot, ref_max_side=max_side)
+    except ApprovalError as exc:
+        _fail(str(exc), EXIT_USER_ERROR)
+    candidate = store.step(step).candidate(n)
+    if candidate.qc is None:
+        console.print(f"[yellow]c{n} was never checked by QC; approved anyway.[/yellow]")
+    elif not candidate.qc.passed:
+        console.print(f"[yellow]c{n} failed QC ({candidate.qc.reason}); approved anyway.[/yellow]")
+    console.print(escape(f"Approved {STEP_NAMES[step]} candidate c{n}: " + ", ".join(store.relative(p) for p in written)))
+    if previous is not None and previous != n:
+        console.print("Images made with the previous one become stale (their reference images changed).")
+    if step == "anchor":
+        console.print("Next: `stickman bootstrap` makes the mascot sheet candidates, with this anchor as their reference.")
+    else:
+        console.print(escape(
+            f"Bootstrap is complete: the mascot's seed ({candidate.seed}) and model are in config/mascot.yaml. "
+            "`stickman generate` now sends the anchor and the mascot sheet with each image, and "
+            "`stickman compare -p <project>` runs the model comparison."
+        ))
+
+
+def _bootstrap_step(
+    cfg: AppConfig, store: BootstrapStore, style: StyleConfig, mascot: MascotConfig, pricing: PricingConfig, *,
+    candidates: int | None, force: bool,
+) -> None:
+    root, settings = store.workspace, cfg.settings
+    step = pending_step(root, mascot, style.style_version)
+    if step is None:
+        console.print(escape(
+            f"Bootstrap is complete: {store.relative(anchor_path(root, style.style_version))} and {mascot.sheet} "
+            f"(seed {mascot.seed}, {mascot.model})."
+        ))
+        return
+    wanted = candidates or (settings.bootstrap.anchor_candidates if step == "anchor" else settings.bootstrap.mascot_candidates)
+    try:
+        plan = step_plan(step, workspace=root, settings=settings, style=style, mascot=mascot, pricing=pricing,
+                         files=ReferenceFiles(root, ref_max_side=settings.image.ref_max_side))
+    except ConfigError as exc:
+        _fail(str(exc), EXIT_CONFIG_ERROR)
+    existing = store.step(step).candidates
+    jobs = plan.jobs(store, max(0, wanted - len(existing)))
+    unchecked = [c for c in existing if c.qc is None]
+    errors: dict[str, str] = {}
+    result: RunResult | None = None
+    log = RunLog.for_project(store.folder, secrets=_secrets(cfg))
+    if jobs or unchecked:
+        ledger = Ledger(root / LEDGER_FILE)
+        now = datetime.now().astimezone()
+        budget = Budget.from_ledger(
+            ledger, settings.budget, now=now, force=force,
+            warn=lambda message: console.print(f"[yellow]{escape(message)}[/yellow]"),
+        )
+        meter = Meter(project=BOOTSTRAP_PROJECT, ledger=ledger, budget=budget, pricing=pricing)
+        _print_bootstrap_start(cfg, pricing, ledger, now, plan, jobs, unchecked)
+        result, errors = asyncio.run(_make_candidates(cfg, store, meter, log, plan, jobs, len(jobs) + len(unchecked)))
+    _print_candidates(store, step, errors)
+    if result is not None:
+        _exit_for(result, log, again="stickman bootstrap")
+    if not store.step(step).candidates:
+        _fail("No candidate could be made (see the errors above). Run `stickman bootstrap` again.", EXIT_USER_ERROR)
+    option = "--approve-anchor" if step == "anchor" else "--approve-mascot"
+    console.print(escape(
+        f"Look at the candidates, then approve one: `stickman bootstrap {option} <N>`. "
+        f"`stickman bootstrap --candidates {len(store.step(step).candidates) + 2}` adds more."
+    ))
+    raise typer.Exit(EXIT_PAUSED)
+
+
+def _print_bootstrap_start(
+    cfg: AppConfig, pricing: PricingConfig, ledger: Ledger, now: datetime, plan: StepPlan,
+    jobs: list[CandidateJob], unchecked: list[Candidate],
+) -> None:
+    check = _check_usd(cfg, pricing)
+    how = f", each checked by {cfg.settings.llm.vision_model}" if cfg.settings.qc.vision else ", pixel checks only"
+    if jobs:
+        estimate = (plan.estimate_usd + check) * len(jobs)
+        console.print(escape(
+            f"{STEP_NAMES[plan.step].capitalize()}: making {len(jobs)} candidate(s) on {plan.model} at "
+            f"{plan.size[0]}x{plan.size[1]}{how} ≈ {format_usd(estimate)} (≈ {usd_neurons(estimate):,.0f} neurons)."
+        ))
+    if unchecked:
+        console.print(escape(f"Checking {len(unchecked)} candidate(s) with no check yet: " + ", ".join(f"c{c.n}" for c in unchecked)))
+    line = _free_plan_line(
+        cfg, pricing, ledger, now, per_item_usd=plan.estimate_usd + check, count=len(jobs), noun="candidate(s)",
+        what="image and check" if cfg.settings.qc.vision else "image", again="stickman bootstrap",
+    )
+    if line is not None and jobs:
+        console.print(escape(line))
+
+
+async def _make_candidates(
+    cfg: AppConfig, store: BootstrapStore, meter: Meter, log: RunLog, plan: StepPlan, jobs: list[CandidateJob], total: int,
+) -> tuple[RunResult, dict[str, str]]:
+    columns = (TextColumn("{task.description}"), BarColumn(), MofNCompleteColumn(), TimeElapsedColumn())
+    with Progress(*columns, console=console, transient=True) as progress:
+        task = progress.add_task("Candidates", total=total)
+        async with build_client(cfg) as client:
+            control = RunControl(cfg.settings.retry.circuit_breaker)
+            calls = Calls(client, meter, log, control, retry=cfg.settings.retry, qc=cfg.settings.qc,
+                          vision_model=cfg.settings.llm.vision_model, sleep=_wait)
+            maker = CandidateMaker(calls, store, concurrency=cfg.settings.render.concurrency,
+                                   on_done=lambda: progress.update(task, advance=1))
+            return await maker.run(plan, jobs), maker.errors
+
+
+def _print_candidates(store: BootstrapStore, step: Step, errors: dict[str, str]) -> None:
+    state = store.step(step)
+    if state.candidates:
+        console.print(f"{STEP_NAMES[step].capitalize()} candidates, best first:")
+    for c in ranked(state.candidates):
+        if c.qc is None:
+            verdict = "not checked yet"
+        elif c.qc.passed:
+            verdict = "passed"
+        else:
+            verdict = f"failed: {c.qc.reason}"
+        idea = f"idea {c.qc.score}/5" if c.qc is not None and c.qc.vision is not None else "idea -"
+        approved = "  (approved)" if state.approved == c.n else ""
+        console.print(escape(f"  c{c.n:<3} {verdict:<26} {idea:<9} {c.file}{approved}"))
+    for label, error in errors.items():
+        console.print(f"[yellow]{escape(f'{label}: {error}')}[/yellow]")
 
 
 HAND_EDITED_NOTE = (
@@ -503,11 +695,11 @@ def _generate_locked(
     _exit_for(result, log)
 
 
-def _check_usd(cfg: AppConfig, ctx: RenderContext) -> float:
+def _check_usd(cfg: AppConfig, pricing: PricingConfig) -> float:
     """What a typical vision check costs (qwen's tokens; Task 11 of the M4 plan measured them)."""
     if not cfg.settings.qc.vision:
         return 0.0
-    price = ctx.pricing.llm(cfg.settings.llm.vision_model)
+    price = pricing.llm(cfg.settings.llm.vision_model)
     return 0.0 if price is None else llm_cost_usd(price, *TYPICAL_TOKENS)
 
 
@@ -525,7 +717,7 @@ def _check_only(store: StateStore, jobs: list[RenderJob]) -> set[str]:
 def _print_run_start(jobs: list[RenderJob], store: StateStore, cfg: AppConfig, ctx: RenderContext, ledger: Ledger, now: datetime) -> None:
     check_only = _check_only(store, jobs)
     to_make = [job for job in jobs if job.unit_id not in check_only]
-    check = _check_usd(cfg, ctx)
+    check = _check_usd(cfg, ctx.pricing)
     estimate = sum(job.estimate_usd for job in to_make) + check * len(jobs)
     how = (f", each checked by {cfg.settings.llm.vision_model}" if cfg.settings.qc.vision
            else ", pixel checks only (qc.vision is off)")
@@ -540,20 +732,32 @@ def _print_run_start(jobs: list[RenderJob], store: StateStore, cfg: AppConfig, c
         ))
         if not to_make:
             console.print(escape(f"Cost {cost}."))
+    line = _free_plan_line(
+        cfg, ctx.pricing, ledger, now, per_item_usd=estimate / len(jobs), count=len(jobs), noun="unit(s)",
+        what="image and check" if cfg.settings.qc.vision else "image", again="stickman resume",
+    )
+    if line is not None:
+        console.print(escape(line))
+
+
+def _free_plan_line(
+    cfg: AppConfig, pricing: PricingConfig, ledger: Ledger, now: datetime, *,
+    per_item_usd: float, count: int, noun: str, what: str, again: str,
+) -> str | None:
+    """How many more images fit in today's free allocation (spec §10.1 [M3]); None on the paid plan."""
     if cfg.settings.account.plan != "free":
-        return
+        return None
     used = ledger.neurons_since(utc_day_start(now))
-    allowance = ctx.pricing.free_daily_neurons
-    per_unit = usd_neurons(estimate / len(jobs))
-    fit = max(0, math.floor((allowance - used) / per_unit)) if per_unit > 0 else len(jobs)
-    what = "image and check" if cfg.settings.qc.vision else "image"
+    allowance = pricing.free_daily_neurons
+    per_item = usd_neurons(per_item_usd)
+    fit = max(0, math.floor((allowance - used) / per_item)) if per_item > 0 else count
     line = (
         f"Free plan: about {used:,.0f} of {allowance:,.0f} neurons used today (UTC), "
-        f"so about {fit} more unit(s) fit ({what}) before the reset at {_reset_time(now)}."
+        f"so about {fit} more {noun} fit ({what}) before the reset at {_reset_time(now)}."
     )
-    if fit < len(jobs):
-        line += " The run pauses at the daily limit; `stickman resume` continues after the reset."
-    console.print(escape(line))
+    if fit < count:
+        line += f" The run pauses at the daily limit; `{again}` continues after the reset."
+    return line
 
 
 async def _render(
@@ -592,24 +796,24 @@ async def _render(
             return await renderer.run(jobs), renderer.softened
 
 
-def _exit_for(result: RunResult, log: RunLog) -> None:
+def _exit_for(result: RunResult, log: RunLog, *, again: str = "stickman resume") -> None:
     """spec §9.5, §9.7: pauses exit 2 with how to continue; a rejected token exits 3."""
     if result.stop is None:
         return
     if result.stop is StopReason.DAILY_LIMIT:
         _fail(
             "The free daily allocation of 10,000 neurons is used up. Finished images are kept; "
-            f"run `stickman resume` after the daily reset (00:00 UTC, {_reset_time(datetime.now().astimezone())}).",
+            f"run `{again}` after the daily reset (00:00 UTC, {_reset_time(datetime.now().astimezone())}).",
             EXIT_PAUSED,
         )
     if result.stop is StopReason.BUDGET:
         _fail(
             log.mask(
-                f"Weekly budget reached: {result.detail}. Nothing new was started. Run `stickman resume --force` "
+                f"Weekly budget reached: {result.detail}. Nothing new was started. Run `{again} --force` "
                 "to go on anyway, or raise budget.weekly_usd in config/settings.yaml."
             ),
             EXIT_PAUSED,
         )
     if result.stop is StopReason.CIRCUIT_BREAKER:
-        _fail(OUTAGE_MESSAGE, EXIT_PAUSED)
+        _fail(f"Possible outage — run `{again}` later.", EXIT_PAUSED)
     _fail(TOKEN_HELP, EXIT_CONFIG_ERROR)
