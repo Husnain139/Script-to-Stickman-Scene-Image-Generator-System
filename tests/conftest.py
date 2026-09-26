@@ -404,6 +404,35 @@ def built_prompts(tmp_path_factory):
     return build
 
 
+MASCOT_YAML = (
+    "schema_version: 1\nid: mascot\nname: \"Everyman\"\nfigures: 1\n"
+    "identity: >-\n  the main character: an average-height stickman with a large round head, exactly three short\n"
+    "  hair strokes curling to the right on top of the head, dot eyes and short curved eyebrows\n"
+    "default_outfit: >-\n  a small solid-black necktie and solid-black shoes\n"
+    "sheet: library/mascot/sheet_v1.png\nref: library/mascot/ref_v1.png\n"
+    "seed: 7\nmodel: \"@cf/black-forest-labs/flux-2-klein-9b\"\nstyle_version: 1\n"
+)
+
+
+@pytest.fixture
+def bootstrapped():
+    """Writes what an approved bootstrap leaves: the anchor and the mascot sheet, full size and reference copy,
+    and mascot.yaml with the approval's seed and model."""
+    def write(workspace):
+        files = {
+            "library/style/anchor_v1.png": (1024, 768), "library/style/anchor_v1_ref.png": (512, 384),
+            "library/mascot/sheet_v1.png": (768, 1024), "library/mascot/ref_v1.png": (384, 512),
+        }
+        for relative, size in files.items():
+            path = workspace / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", size, "white").save(path, format="PNG")
+        (workspace / "config").mkdir(exist_ok=True)
+        (workspace / "config" / "mascot.yaml").write_text(MASCOT_YAML, encoding="utf-8")
+
+    return write
+
+
 SAMPLE_GROUPS = [[n] for n in range(1, 13)] + [[13, 14]] + [[n] for n in range(15, 30)]
 SAMPLE_CORRECTIONS = [
     {"line": 1, "from": "90 at night", "to": "9 at night", "reason": "impossible clock time"},
