@@ -46,6 +46,46 @@ def test_the_style_covers_dark_mode_reduced_motion_focus_and_narrow_windows():
     assert "@media (max-width: 900px)" in STYLE
 
 
+def test_hidden_beats_every_component_that_sets_display(): # V1
+    assert re.search(r"\[hidden\]\s*\{[^}]*display:\s*none\s*!important", STYLE)
+    for selector in (".overlay", ".notice"):
+        rule = re.search(rf"{re.escape(selector)}\s*\{{[^}}]*\}}", STYLE)
+        assert rule, selector
+        assert "!important" not in rule.group()  # neither may fight the [hidden] override back
+
+
+def test_switching_views_by_url_follows_the_hash(): # V2
+    start = SCRIPT[SCRIPT.index("function start()"):SCRIPT.index("if (typeof document")]
+    assert 'addEventListener("hashchange"' in start
+    assert "VIEWS.includes(wanted)" in start
+
+
+def test_status_badges_dont_stretch(): # V3
+    rule = re.search(r"\.badge\s*\{[^}]*\}", STYLE)
+    assert rule and "justify-self: start" in rule.group()
+
+
+def test_the_gallery_images_are_capped_so_the_actions_stay_above_the_fold(): # V4
+    assert re.search(r"\.detail \.paper img\s*\{[^}]*max-height:\s*62vh[^}]*object-fit:\s*contain", STYLE)
+
+
+def test_the_approved_tag_has_a_gap_from_the_verdict_text(): # V5
+    assert re.search(r"figcaption \.tag\s*\{[^}]*margin-left:\s*6px", STYLE)
+
+
+def test_plan_headings_dont_run_into_the_panel_above_them(): # V7
+    assert re.search(r"\.panel h2:not\(:first-child\)\s*\{[^}]*margin-top:\s*18px", STYLE)
+
+
+def test_favicon_is_a_small_svg_linked_from_the_page(): # V6
+    favicon = STATIC / "favicon.svg"
+    assert favicon.is_file()
+    data = favicon.read_bytes()
+    assert len(data) < 1024
+    assert b"<svg" in data
+    assert '<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">' in PAGE
+
+
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_the_script_is_valid_javascript():
     result = subprocess.run([NODE, "--check", str(STATIC / "app.js")], capture_output=True, text=True)

@@ -631,6 +631,14 @@ function onKey(event) {
 function start() {
   const wanted = location.hash.slice(1);
   if (VIEWS.includes(wanted)) ui.view = wanted;
+  // A bookmark, a typed hash or the Back/Forward buttons change the view too, not only the tabs.
+  window.addEventListener("hashchange", () => {
+    const now = location.hash.slice(1);
+    if (VIEWS.includes(now) && now !== ui.view) {
+      ui.view = now;
+      render();
+    }
+  });
   for (const tab of document.querySelectorAll(".tabs button")) {
     tab.addEventListener("click", () => {
       ui.view = tab.dataset.view;

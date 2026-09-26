@@ -71,6 +71,10 @@ def test_the_page_and_its_data_are_served(site):
     assert view["plan_hash"].startswith("sha256:") and view["errors"] == []
 
 
+def test_the_favicon_is_served(site): # V6
+    assert site.get("/static/favicon.svg").status_code == 200
+
+
 def test_only_127_0_0_1_hosts_are_answered(tmp_path, plan_data, fake_images):
     project = tmp_path / "p"
     project.mkdir()
