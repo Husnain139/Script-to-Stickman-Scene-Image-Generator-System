@@ -176,3 +176,48 @@ def test_files_serves_project_images_and_nothing_else(site, tmp_path):
 def test_no_secret_reaches_the_page(site):
     site.post("/api/units/001/approve", headers=WRITE)
     assert "tok-secret" not in site.get("/api/project").text
+
+
+@pytest.mark.parametrize("url", [
+    "/files///host/share/x.png",
+    "/files/%5C%5Chost%5Cs%5Cx.png",
+    "/files/C:/Windows/x.png",
+    "/files/..%2F..%2Fx.png",
+    f"/files/projects/{FOLDER}/images/%00x.png",
+    f"/files/projects/{FOLDER}/images/..%2F..%2F..%2Fstyle_refs%2Fa.png",
+])
+def test_files_refuses_unc_absolute_and_parent_paths_without_touching_the_disk(site, monkeypatch, url):
+    import pathlib
+
+    touched = []
+
+    def fake(name, value):
+        def call(self, *args, **kwargs):  # records the call and never reaches the disk (a UNC path would)
+            touched.append((name, str(self)))
+            if isinstance(value, Exception):
+                raise value
+            return self if value is None else value
+        return call
+
+    with monkeypatch.context() as patch:
+        for name, value in (("resolve", None), ("is_file", False), ("exists", False), ("stat", OSError("no"))):
+            patch.setattr(pathlib.Path, name, fake(name, value))
+        status = site.get(url).status_code
+    assert status == 404, url
+    assert touched == [], touched
+
+
+SECURITY_HEADERS = {
+    "x-frame-options": "DENY",
+    "content-security-policy": "default-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+                               "form-action 'self'",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer",
+}
+
+
+@pytest.mark.parametrize("url", ["/", "/api/project", "/files/nothing.png", "/static/app.js"])
+def test_every_response_forbids_framing_and_sniffing(site, url):
+    response = site.get(url)
+    for name, value in SECURITY_HEADERS.items():
+        assert response.headers.get(name) == value, (url, name)

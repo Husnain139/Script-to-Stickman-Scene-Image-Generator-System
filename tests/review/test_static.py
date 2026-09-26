@@ -66,3 +66,10 @@ def test_times_money_and_job_names_are_written_like_the_cli_writes_them():
         "0:00.0", "0:21.0", "2:09.4", "$0.0023", "$0.50", "$12.30",
         "regenerating 006a", "making anchor candidates", "replanning 001",
     ]
+
+
+def test_the_page_needs_no_inline_script_or_style_attribute_under_its_content_security_policy():
+    assert "<script>" not in PAGE and " style=" not in PAGE and "onclick=" not in PAGE
+    assert not re.search(r"""["']?style["']?\s*:""", SCRIPT)  # h(tag, {style: ...}) would set a blocked attribute
+    assert 'setAttribute("style"' not in SCRIPT
+    assert ".style.flexGrow = " in SCRIPT  # the timeline's widths go through the CSSOM, which CSP allows

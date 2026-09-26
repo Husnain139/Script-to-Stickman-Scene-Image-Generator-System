@@ -312,13 +312,18 @@ function shortcutsHint() {
 
 function timeline(data) {
   return h("div", { class: "timeline", role: "list", "aria-label": "Units along the video" },
-    data.units.map((unit) => h("button", {
-      type: "button", role: "listitem", class: `segment${unit.id === ui.focus ? " focused" : ""}`,
-      "data-status": unit.status, style: `flex-grow: ${Math.max(unit.end - unit.start, 0.1)}`,
-      title: `${unit.id} at ${formatTime(unit.start)}: ${STATUS_TEXT[unit.status]}`,
-      "aria-label": `${unit.id} at ${formatTime(unit.start)}, ${STATUS_TEXT[unit.status]}`,
-      onclick: () => focusUnit(unit.id),
-    })));
+    data.units.map((unit) => {
+      const segment = h("button", {
+        type: "button", role: "listitem", class: `segment${unit.id === ui.focus ? " focused" : ""}`,
+        "data-status": unit.status,
+        title: `${unit.id} at ${formatTime(unit.start)}: ${STATUS_TEXT[unit.status]}`,
+        "aria-label": `${unit.id} at ${formatTime(unit.start)}, ${STATUS_TEXT[unit.status]}`,
+        onclick: () => focusUnit(unit.id),
+      });
+      // Through the CSSOM: the Content-Security-Policy blocks style="" attributes, not this.
+      segment.style.flexGrow = String(Math.max(unit.end - unit.start, 0.1));
+      return segment;
+    }));
 }
 
 function galleryBody(data, ids) {

@@ -8,7 +8,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -45,6 +45,16 @@ from stickman.settings import ConfigError, Settings
 STATIC = Path(__file__).parent / "static"
 CHANGES = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 NO_CACHE = {"Cache-Control": "no-cache"}
+# Sent with every response: no other site may frame the page (a click there could spend neurons), and the
+# browser runs only this server's own script, style and images.
+NOT_IN_PATHS = ("\\", ":", "\0")  # a /files/ path never has these: a backslash, a drive colon or a NUL
+SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "default-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+                               "form-action 'self'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
 
 
 class _Body(BaseModel):
@@ -91,6 +101,43 @@ class PlanSource:
         return loaded.plan, loaded.hash, []
 
 
+class _Served:
+    """Which files /files/ may send. The path is checked as text first, so an absolute, UNC (//host/share) or
+    parent path never reaches the disk: on Windows, merely looking at a UNC path makes the machine sign in to
+    that host. Only then is the file resolved, and checked again, for links out of the allowed folders."""
+
+    def __init__(self, workspace: Path, roots: Iterable[Path], *, forbidden: Path) -> None:
+        self._workspace = workspace.resolve()
+        self._roots: list[tuple[str, ...]] = []
+        for root in roots:
+            try:
+                self._roots.append(root.resolve().relative_to(self._workspace).parts)
+            except ValueError:  # a folder outside the workspace is never served
+                continue
+        self._forbidden = forbidden.resolve()
+
+    def lexical(self, path: str) -> Path | None:
+        if not path or path.startswith("/") or any(char in path for char in NOT_IN_PATHS):
+            return None
+        pure = PurePosixPath(path)
+        parts = pure.parts
+        if pure.is_absolute() or ".." in parts or pure.suffix.lower() != ".png":
+            return None
+        if not any(len(parts) > len(root) and parts[: len(root)] == root for root in self._roots):
+            return None
+        return self._workspace.joinpath(*parts)
+
+    def find(self, path: str) -> Path | None:
+        candidate = self.lexical(path)
+        if candidate is None:
+            return None
+        target = candidate.resolve()
+        inside = any(target.is_relative_to(self._workspace.joinpath(*root)) for root in self._roots)
+        if not inside or target.is_relative_to(self._forbidden) or not target.is_file():
+            return None
+        return target
+
+
 def create_app(
     workspace: Path,
     project_dir: Path,
@@ -110,8 +157,8 @@ def create_app(
                 on_plan_written=watcher.wrote)
     source = PlanSource(project_dir / "plan.yaml")
     plan_path = project_dir / "plan.yaml"
-    roots = [project_dir / "images", workspace / BOOTSTRAP_DIR, workspace / "library" / "style", workspace / "library" / "mascot"]
-    forbidden = (workspace / FORBIDDEN_DIR).resolve()
+    served = _Served(workspace, [project_dir / "images", workspace / BOOTSTRAP_DIR, workspace / "library" / "style",
+                                 workspace / "library" / "mascot"], forbidden=workspace / FORBIDDEN_DIR)
 
     def masked(text: str) -> str:
         return mask(text, secrets)
@@ -134,10 +181,13 @@ def create_app(
     @app.middleware("http")
     async def guard(request: Request, call_next: Callable[[Request], Any]) -> Any:
         if request.headers.get("host") not in hosts:
-            return JSONResponse({"error": "The review page answers only on 127.0.0.1."}, status_code=400)
-        if request.method in CHANGES and request.headers.get("x-stickman") != "1":
-            return JSONResponse({"error": "Changes need the X-Stickman: 1 header."}, status_code=403)
-        return await call_next(request)
+            response = JSONResponse({"error": "The review page answers only on 127.0.0.1."}, status_code=400)
+        elif request.method in CHANGES and request.headers.get("x-stickman") != "1":
+            response = JSONResponse({"error": "Changes need the X-Stickman: 1 header."}, status_code=403)
+        else:
+            response = await call_next(request)
+        response.headers.update(SECURITY_HEADERS)
+        return response
 
     @app.exception_handler(ActionError)
     async def action_error(request: Request, exc: ActionError) -> JSONResponse:
@@ -265,14 +315,8 @@ def create_app(
     async def files(path: str) -> FileResponse:
         """Only PNGs under the project's images, bootstrap's candidates and the approved library images; never
         style_refs/ (spec §2.2), and never anything outside those folders."""
-        target = (workspace / path).resolve()
-        allowed = (
-            target.suffix.lower() == ".png"
-            and target.is_file()
-            and not target.is_relative_to(forbidden)
-            and any(target.is_relative_to(root.resolve()) for root in roots)
-        )
-        if not allowed:
+        target = served.find(path)
+        if target is None:
             raise ActionError(404, "Not found.")
         return FileResponse(target, media_type="image/png", headers=NO_CACHE)
 
