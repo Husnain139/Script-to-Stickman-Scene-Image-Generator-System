@@ -1,6 +1,6 @@
 """Watching the project folder for the review page (spec §12.4): a saved plan.yaml sends a `plan` event and
 a changed state.json a `state` event, within DEBOUNCE_MS. After the server writes plan.yaml it records the
-new hash, and a change with that hash is ignored."""
+new hash, and the change to that hash is ignored once."""
 
 from __future__ import annotations
 
@@ -40,7 +40,9 @@ class PlanWatcher:
             current = self._plan_hash()
             if current != self._last:
                 self._last = current
-                if current not in self._own:
+                if current in self._own:
+                    self._own.discard(current)  # seen: forgotten, so a later edit back to this content is news
+                else:
                     self._hub.publish("plan", {"hash": current})
                     kinds.append("plan")
         if "state.json" in names:

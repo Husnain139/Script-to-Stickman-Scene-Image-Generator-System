@@ -85,3 +85,17 @@ def test_a_state_change_sends_a_state_event_and_other_files_nothing(tmp_path):
 
 async def _subscribe(hub):
     return hub.subscribe()
+
+
+def test_an_own_write_is_forgotten_once_seen_so_a_later_revert_to_it_is_news(tmp_path):
+    path = tmp_path / "plan.yaml"
+    path.write_bytes(b"a: 1\n")
+    watcher = PlanWatcher(tmp_path, EventHub())
+    path.write_bytes(b"a: 2\n")  # the server's write
+    watcher.wrote(file_hash(b"a: 2\n"))
+    assert watcher.changed([path]) == []
+    assert watcher._own == set()  # dropped once seen: the set doesn't grow forever
+    path.write_bytes(b"a: 3\n")  # the user's edit
+    assert watcher.changed([path]) == ["plan"]
+    path.write_bytes(b"a: 2\n")  # the user goes back to what the server once wrote
+    assert watcher.changed([path]) == ["plan"]
