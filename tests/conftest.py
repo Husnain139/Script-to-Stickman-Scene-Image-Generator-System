@@ -14,7 +14,11 @@ import pytest
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from stickman.cf.client import ImageResult, LLMResult
+from stickman.config_files import load_mascot, load_style
+from stickman.plan.cast import cast_infos
 from stickman.plan.llm import StageRunner
+from stickman.plan.models import parse_plan
+from stickman.prompt.builder import build_prompt
 from stickman.runlog import RunLog
 from stickman.settings import LLMSettings, RetrySettings
 
@@ -379,6 +383,25 @@ def plan_data():
             },
         ],
     }
+
+
+@pytest.fixture
+def built_prompts(tmp_path_factory):
+    """Plan data whose image prompts the builder made with no reference images, as `stickman new`
+    writes them before bootstrap. Uses the packaged default style.yaml and mascot.yaml."""
+    empty = tmp_path_factory.mktemp("defaults")
+    style, mascot = load_style(empty), load_mascot(empty)
+
+    def build(data):
+        plan = parse_plan(data)
+        table = cast_infos(plan.cast, mascot)
+        units = {unit.id: unit for unit in plan.units()}
+        for scene in data["scenes"]:
+            for unit in scene["units"]:
+                unit["image_prompt"] = build_prompt(units[unit["id"]], style=style, cast=table, references=None)
+        return data
+
+    return build
 
 
 SAMPLE_GROUPS = [[n] for n in range(1, 13)] + [[13, 14]] + [[n] for n in range(15, 30)]

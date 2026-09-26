@@ -24,6 +24,7 @@ from stickman.cf.errors import CFError, ErrorCategory
 from stickman.ingest.parse import parse_duration, parse_script
 from stickman.ingest.timing import build_timeline
 from stickman.ledger import LEDGER_FILE, Ledger, utc_day_start
+from stickman.library import find_references
 from stickman.meter import Meter
 from stickman.plan.llm import PlanningError, StageRunner
 from stickman.plan.models import CastMember, Plan, PlanValidationError
@@ -35,7 +36,8 @@ from stickman.plan.planner import (
     plan_script,
     replan_unit,
 )
-from stickman.plan.store import PlanChangedError, load_plan, to_document, update_unit, write_plan
+from stickman.plan.refresh import refresh_prompts, with_prompts
+from stickman.plan.store import LoadedPlan, PlanChangedError, load_plan, to_document, update_unit, write_plan
 from stickman.pricing import format_usd, llm_cost_usd, load_pricing, usd_neurons
 from stickman.project import ProjectError, check_unplanned, choose_project_dir, create_project, resolve_project, slugify
 from stickman.qc.vision import TYPICAL_TOKENS
@@ -378,6 +380,36 @@ def resume(
     _generate(workspace, project, force=force, limit=limit)
 
 
+HAND_EDITED_NOTE = (
+    "These prompts don't match their fields (edited by hand?), so they were left as they are, although their "
+    "images are sent with reference images the prompt doesn't describe. `stickman replan <unit>` rebuilds one; "
+    "`prompt_locked: true` keeps it: "
+)
+
+
+def _refresh_prompts(path: Path, ctx: RenderContext, loaded: LoadedPlan) -> Plan:
+    """Tool-built prompts rebuilt for the reference images that exist now, written to plan.yaml
+    hash-checked (spec §7.4 [M5]). Hand-edited and locked prompts are left as they are."""
+    plan = loaded.plan
+    references = find_references(
+        ctx.workspace, use_references=ctx.settings.image.use_references, style_version=plan.style_version,
+        mascot=ctx.mascot, cast=plan.cast, library=ctx.library,
+    )
+    refresh = refresh_prompts(plan, style=ctx.style, mascot=ctx.mascot, references=references)
+    if refresh.hand_edited:
+        console.print(f"[yellow]{escape(HAND_EDITED_NOTE + ', '.join(refresh.hand_edited))}[/yellow]")
+    if not refresh.rebuilt:
+        return plan
+    for unit_id, prompt in refresh.rebuilt.items():
+        update_unit(loaded.doc, unit_id, {"image_prompt": prompt})
+    _write_plan(path, loaded.doc, expected_hash=loaded.hash, again=" Nothing was generated; run the command again.")
+    console.print(escape(
+        f"Rebuilt the image prompts of {len(refresh.rebuilt)} unit(s) for the reference images that now exist: "
+        + ", ".join(refresh.rebuilt)
+    ))
+    return with_prompts(plan, refresh.rebuilt)
+
+
 def _generate(workspace: Path, project: Path | None, *, force: bool, limit: int | None) -> None:
     root = workspace.resolve()
     try:
@@ -392,14 +424,9 @@ def _generate(workspace: Path, project: Path | None, *, force: bool, limit: int 
     except ConfigError as exc:
         _fail(str(exc), EXIT_CONFIG_ERROR)
     try:
-        plan = load_plan(directory / "plan.yaml", library_ids=ctx.library_ids).plan
+        loaded = load_plan(directory / "plan.yaml", library_ids=ctx.library_ids)
     except PlanValidationError as exc:
         _fail("plan.yaml is invalid:\n" + "\n".join(exc.errors), EXIT_USER_ERROR)
-    try:
-        builder = JobBuilder(ctx, plan)
-        expected = builder.expected()
-    except ConfigError as exc:
-        _fail(str(exc), EXIT_CONFIG_ERROR)
     lock = ProjectLock(directory)
     try:
         lock.acquire()
@@ -411,6 +438,12 @@ def _generate(workspace: Path, project: Path | None, *, force: bool, limit: int 
             EXIT_USER_ERROR,
         )
     try:
+        plan = _refresh_prompts(directory / "plan.yaml", ctx, loaded)
+        try:
+            builder = JobBuilder(ctx, plan)
+            expected = builder.expected()
+        except ConfigError as exc:
+            _fail(str(exc), EXIT_CONFIG_ERROR)
         _generate_locked(cfg, ctx, directory, plan, builder, expected, lock, force=force, limit=limit)
     except KeyboardInterrupt:
         console.print("Stopped. Finished images are kept; run `stickman resume` to continue.")

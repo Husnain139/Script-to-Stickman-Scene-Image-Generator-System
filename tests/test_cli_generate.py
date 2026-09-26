@@ -343,3 +343,38 @@ def test_turning_the_vision_check_off_leaves_the_pixel_checks(workspace, monkeyp
     assert "pixel checks only (qc.vision is off)" in result.output
     assert "so about 48 more unit(s) fit" in result.output
     assert client.chat_calls == [] and set(statuses(workspace).values()) == {"generated"}
+
+
+def anchor(workspace):
+    path = workspace / "library" / "style" / "anchor_v1_ref.png"
+    path.parent.mkdir(parents=True)
+    Image.new("RGB", (512, 384), "white").save(path, format="PNG")
+    return path.read_bytes()
+
+
+def test_generate_rebuilds_tool_built_prompts_once_the_anchor_exists(workspace, monkeypatch, fake_images, plan_data, built_prompts):
+    path = project(workspace) / "plan.yaml"
+    write_plan(path, to_document(parse_plan(built_prompts(plan_data))), expected_hash=None)
+    path.write_text("# my notes\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+    anchor_bytes = anchor(workspace)
+    client = use_images(monkeypatch, fake_images())
+    result = generate(workspace)
+    assert result.exit_code == 0, result.output
+    assert "Rebuilt the image prompts of 3 unit(s) for the reference images that now exist: 001, 002a, 002b" in result.output
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("# my notes\n") and text.count("Reference images: image 0 shows") == 3
+    assert all("Reference images: image 0 shows" in call["prompt"] for call in client.calls)
+    assert all(call["input_images"] == [anchor_bytes] for call in client.calls)
+    again = generate(workspace)
+    assert "Rebuilt the image prompts" not in again.output
+
+
+def test_hand_edited_prompts_are_left_as_they_are_with_a_warning(workspace, monkeypatch, fake_images):
+    anchor(workspace)
+    before = (project(workspace) / "plan.yaml").read_bytes()
+    client = use_images(monkeypatch, fake_images())
+    result = generate(workspace)
+    assert result.exit_code == 0, result.output
+    assert "so they were left as they are" in result.output and "001, 002a, 002b" in result.output
+    assert (project(workspace) / "plan.yaml").read_bytes() == before
+    assert client.calls[0]["prompt"] == "prompt for 001"
