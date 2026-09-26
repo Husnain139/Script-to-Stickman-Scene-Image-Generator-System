@@ -24,14 +24,28 @@ from stickman.bootstrap.store import BootstrapError, BootstrapStore, Candidate, 
 from stickman.budget import Budget
 from stickman.cf.client import CloudflareClient
 from stickman.cf.errors import CFError, ErrorCategory
+from stickman.compare.report import collect, report_lines, write_report
+from stickman.compare.runs import PreparedRun, prepare_run, render_runs
+from stickman.compare.setup import (
+    CompareError,
+    ComparePick,
+    CompareSetup,
+    compare_dir,
+    create_compare,
+    default_runs,
+    find_compare,
+    load_compare,
+)
 from stickman.config_files import MascotConfig, StyleConfig, load_mascot, load_style
 from stickman.ingest.parse import parse_duration, parse_script
 from stickman.ingest.timing import build_timeline
 from stickman.ledger import LEDGER_FILE, Ledger, utc_day_start
 from stickman.library import anchor_path, find_references
 from stickman.meter import Meter
+from stickman.plan.cast import cast_infos
 from stickman.plan.llm import PlanningError, StageRunner
 from stickman.plan.models import CastMember, Plan, PlanValidationError
+from stickman.plan.picking import pick_compare_units
 from stickman.plan.planner import (
     REPLAN_KEYS,
     PlanningContext,
@@ -570,6 +584,141 @@ def _print_candidates(store: BootstrapStore, step: Step, errors: dict[str, str])
         console.print(escape(f"  c{c.n:<3} {verdict:<26} {idea:<9} {c.file}{approved}"))
     for label, error in errors.items():
         console.print(f"[yellow]{escape(f'{label}: {error}')}[/yellow]")
+
+
+@app.command()
+def compare(
+    project: Path | None = typer.Option(
+        None, "--project", "-p", help="The planned project whose units are compared. Default: the most recent."
+    ),
+    new: bool = typer.Option(False, "--new", help="Start a new comparison even if this project has one."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Start without asking to confirm the estimate."),
+    force: bool = typer.Option(False, "--force", help="Go on past the weekly budget."),
+    workspace: Path = typer.Option(Path("."), "--workspace", "-w", help="Workspace folder."),
+) -> None:
+    """Compare Klein 4B with and without reference images, and at 1280x720 (spec §14.4). Run it again to continue."""
+    root = workspace.resolve()
+    try:
+        source = resolve_project(root, project)
+    except ProjectError as exc:
+        console.print("Project: (none found)")
+        _fail(str(exc), EXIT_USER_ERROR)
+    folder = None if new else find_compare(root, source)
+    creating = folder is None
+    if folder is None:
+        folder = compare_dir(root, source, _today())
+    console.print(f"Project: {escape(folder.name)}")
+    console.print(escape(f"Source: {source.name}"))
+    try:
+        cfg = load_config(root)
+        ctx = RenderContext.load(root, cfg.settings)
+    except ConfigError as exc:
+        _fail(str(exc), EXIT_CONFIG_ERROR)
+    if pending_step(root, ctx.mascot, ctx.style.style_version) is not None:
+        _fail(
+            "Bootstrap isn't complete: run `stickman bootstrap` first. The comparison measures images with and "
+            "without the style anchor and the mascot sheet.",
+            EXIT_USER_ERROR,
+        )
+    if creating:
+        _create_compare(source, folder, ctx)
+    lock = ProjectLock(folder)
+    try:
+        lock.acquire()
+    except LockHeld as exc:
+        _fail(f"{exc}. Let it finish, then run this again.\nIf no stickman is running, delete `{lock.path}`.", EXIT_USER_ERROR)
+    try:
+        _compare_locked(cfg, ctx, source, folder, lock, yes=yes, force=force)
+    except KeyboardInterrupt:
+        console.print(escape(f"Stopped. Finished images are kept; run `stickman compare -p {source.name}` to continue."))
+        raise typer.Exit(EXIT_INTERRUPTED) from None
+    finally:
+        lock.release()
+
+
+def _create_compare(source: Path, folder: Path, ctx: RenderContext) -> None:
+    try:
+        plan = load_plan(source / "plan.yaml", library_ids=ctx.library_ids).plan
+    except PlanValidationError as exc:
+        _fail("plan.yaml is invalid:\n" + "\n".join(exc.errors), EXIT_USER_ERROR)
+    figures = {ref: info.figures for ref, info in cast_infos(plan.cast, ctx.mascot).items()}
+    picks = pick_compare_units(plan, figures)
+    setup = CompareSetup(
+        source=source.name, created=datetime.now().astimezone(),
+        picks=[ComparePick(category=p.category, unit=p.unit_id, filled=p.filled) for p in picks],
+        runs=default_runs(ctx.settings, plan.aspect),
+    )
+    create_compare(folder, source, setup)
+    console.print(escape("Compared units: " + ", ".join(
+        f"{p.unit_id} ({p.category.replace('_', ' ')}{', stand-in' if p.filled else ''})" for p in picks
+    )))
+
+
+def _compare_locked(
+    cfg: AppConfig, ctx: RenderContext, source: Path, folder: Path, lock: ProjectLock, *, yes: bool, force: bool,
+) -> None:
+    if lock.removed_stale is not None:
+        console.print(f"[yellow]Removed a stale lock left by PID {lock.removed_stale}, which is no longer running.[/yellow]")
+    again = f"stickman compare -p {source.name}"
+    try:
+        setup, plan = load_compare(folder, library_ids=ctx.library_ids)
+        prepared = [prepare_run(folder, setup, plan, run, ctx) for run in setup.runs]
+    except (CompareError, JobError) as exc:
+        _fail(str(exc), EXIT_USER_ERROR)
+    except StateError as exc:
+        _fail(f"{exc}. Nothing was changed.", EXIT_USER_ERROR)
+    except ConfigError as exc:
+        _fail(str(exc), EXIT_CONFIG_ERROR)
+    for run in prepared:
+        for note in run.notes:
+            console.print(escape(f"{run.run.id}: {note}"))
+    jobs = [job for run in prepared for job in run.jobs]
+    result: RunResult | None = None
+    if jobs:
+        ledger = Ledger(cfg.workspace / LEDGER_FILE)
+        now = datetime.now().astimezone()
+        estimate = sum(job.estimate_usd for job in jobs) + _check_usd(cfg, ctx.pricing) * len(jobs)
+        how = f", each checked by {cfg.settings.llm.vision_model}" if cfg.settings.qc.vision else ", pixel checks only"
+        per_run = ", ".join(f"{run.run.id} {len(run.jobs)}" for run in prepared if run.jobs)
+        console.print(escape(
+            f"Comparing {len(setup.picks)} unit(s) × {len(setup.runs)} run(s): {len(jobs)} image(s) to make "
+            f"({per_run}){how} ≈ {format_usd(estimate)} (≈ {usd_neurons(estimate):,.0f} neurons). "
+            "No QC retries: the report measures first images."
+        ))
+        line = _free_plan_line(
+            cfg, ctx.pricing, ledger, now, per_item_usd=estimate / len(jobs), count=len(jobs), noun="image(s)",
+            what="image and check" if cfg.settings.qc.vision else "image", again=again,
+        )
+        if line is not None:
+            console.print(escape(line))
+        if not yes and not typer.confirm("Start?", default=False):
+            console.print("Nothing was generated.")
+            return
+        budget = Budget.from_ledger(
+            ledger, cfg.settings.budget, now=now, force=force,
+            warn=lambda message: console.print(f"[yellow]{escape(message)}[/yellow]"),
+        )
+        meter = Meter(project=folder.name, ledger=ledger, budget=budget, pricing=ctx.pricing)
+        result = asyncio.run(_compare_render(cfg, prepared, meter, len(jobs)))
+        console.print(escape(f"Cost this run ≈ {format_usd(meter.run_usd)} (≈ {usd_neurons(meter.run_usd):,.0f} neurons)."))
+    stats, cells = collect(folder, setup)
+    path = write_report(folder, setup, plan, stats, cells, now=datetime.now().astimezone())
+    for row in report_lines(stats):
+        console.print(escape(row))
+    console.print(escape(f"Report: {path}"))
+    if result is not None:
+        _exit_for(result, RunLog(None, secrets=_secrets(cfg)), again=again)
+
+
+async def _compare_render(cfg: AppConfig, prepared: list[PreparedRun], meter: Meter, total: int) -> RunResult:
+    columns = (TextColumn("{task.description}"), BarColumn(), MofNCompleteColumn(), TimeElapsedColumn())
+    with Progress(*columns, console=console, transient=True) as progress:
+        task = progress.add_task("Comparing", total=total)
+        async with build_client(cfg) as client:
+            return await render_runs(
+                client, prepared, meter, secrets=_secrets(cfg), control=RunControl(cfg.settings.retry.circuit_breaker),
+                sleep=_wait, on_done=lambda unit_id: progress.update(task, advance=1),
+            )
 
 
 HAND_EDITED_NOTE = (

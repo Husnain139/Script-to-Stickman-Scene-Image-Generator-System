@@ -119,6 +119,8 @@ One-time setup:
 | `qc.min_idea_score` | `3` | `matches_visual_idea` below this counts as a fail |
 | `test.count` | `3` | |
 | `bootstrap.anchor_candidates` | `4` | |
+| `bootstrap.mascot_candidates` | `3` | [M5] Mascot-sheet candidates per `bootstrap` run (§8.1). |
+| `bootstrap.anchor_scene` | `two_figures` | [M5] `two_figures` or `one_figure`: the anchor's scene (§8.1). Switch to `one_figure` if the comparison shows the anchor's figures leaking into scenes. |
 | `bootstrap.model` | `@cf/black-forest-labs/flux-2-klein-9b` | **[M0]** changed from `flux-2-dev`: dev is unusable synchronously (HTTP 408 timeouts at usable sizes/step counts). Klein 9B used as the bootstrap fallback (user-approved). See `docs/m0-findings.md`. |
 | `export.fps` | `30` | |
 | `export.zoom` | `false` | |
@@ -413,6 +415,7 @@ An entry whose `style_version` is not the current `style.yaml` version is flagge
   - A timeout is `possibly_billed`, at its estimate.
   - Any other error response is `not_billed`.
   - When reading, a torn last line is skipped, and the next entry is still written on a line of its own.
+- **[M5]** Anchor and mascot-sheet candidates are ledgered as `anchor` and `sheet`, with `unit` `anchor-c<N>` / `mascot-c<N>` and `project` `bootstrap`. A comparison's calls use the compare folder's name as `project`. A soften's or redesign's planner calls name their unit.
 
 ### 5.5 Manifests
 - `manifest.json` is an array of units: every plan field, plus the state status, approved version file, seed, model, QC result, `softened` and all corrections.
@@ -668,6 +671,8 @@ the pose described above.
 
 **Small wording rules [M2]:** trailing full stops of `visual_idea`, `composition`, cast descriptions and actions are trimmed, so the template's own full stop isn't doubled. `visual_idea` and `composition` start with a capital letter. "a" or "an" matches the emotion. A unit with no characters says `Characters: none.`
 
+**[M5] Prompts built before the references existed:** before rendering, `generate` rebuilds the `image_prompt` of every unlocked unit whose prompt the tool built — one that, with its "Reference images:" paragraph removed, equals the builder's output with no references — for the reference images that exist now, and writes them to `plan.yaml` hash-checked, with a notice. A prompt that doesn't match is taken as hand-edited and left as it is, with a warning when its images go out with references it doesn't describe. Locked prompts are never touched. Because the tool writes the rebuilt text, the M7 lock detection doesn't take it for a hand edit. `compare` does the same in memory for each run.
+
 ### 7.5 Prompt fixes for retries (keyed by QC reason, §11.3)
 | Reason | Change on retry |
 |---|---|
@@ -712,6 +717,14 @@ the pose described above.
    - Generate candidates (default 3) at `image.sheet_size`, with slot 0 = the anchor.
    - Prompt: `style_text` + *"Character sheet: a single full-body front view of {identity}, wearing {default_outfit}, standing in a neutral pose, centred, arms relaxed."* + `strict_clause`.
    - Approve one. Its sheet, reference copy, `seed` and `model` are written to `mascot.yaml`. The approved `identity` and `default_outfit` are frozen.
+
+**[M5] How bootstrap runs:**
+- `stickman bootstrap` works on the first step not done: the anchor (`library/style/anchor_v<N>.png` and `_ref.png` exist), then the mascot (`mascot.yaml` has a `seed` for this style version and both files exist).
+- It makes candidates until the step has `--candidates` of them (default `bootstrap.anchor_candidates`, or `bootstrap.mascot_candidates`), checks each with QC (§11; the anchor expects 2 figures, or 1 with `anchor_scene: one_figure`, the sheet 1), prints them best first, and exits 2 waiting for approval. There are no QC retries: the candidates are alternatives.
+- Candidates live in `library/_bootstrap/v<style_version>/anchor|mascot/c<N>.png`, each with its record inside, listed in `bootstrap.json`. A candidate the checker couldn't reach is checked again next run, with no new image.
+- Until the review page (M6), approval is on the command line: `stickman bootstrap --approve-anchor N` / `--approve-mascot N`. A candidate that failed QC can still be approved, with a warning. Re-approving the anchor is allowed; images made with the old one become stale.
+- The mascot-sheet prompt also carries the unit prompts' "image 0 shows the drawing style only" sentence, since it is sent with the anchor in slot 0.
+- The anchor-leak check isn't a separate probe: the comparison's `klein-4b-refs` and `klein-4b-no-refs` runs show `character_count` failures with and without the anchor (§14.4).
 
 ### 8.2 Extras' sheets (per project, after plan approval)
 - For each cast member without `library_ref`: generate 2 candidates on `image.model`, using the §8.1 prompt with the member's description. The size is `sheet_size`, or `[1024,768]` if `figures > 1`, and slot 0 is the anchor.
@@ -767,6 +780,7 @@ JSON: {model, messages:[{role:system,…},{role:user,…}], temperature, max_tok
 - **The checker answered unusably** (an invalid reply after 2 attempts, `bad_request` or `refused`): the result is `vision_error`, and the unit becomes `needs_review` without a new image.
 - The mascot reference is the mascot's reference copy once bootstrap approved it. `mascot_mismatch` counts only when it was sent.
 - `qc.vision: false` turns the vision check off.
+- **[M5]** A key the §11.2 schema doesn't have is dropped from the reply rather than failing the check (the schema shown to the model is unchanged).
 
 ### 9.5 Sorting errors into categories (the `cf` module)
 
@@ -786,7 +800,7 @@ JSON: {model, messages:[{role:system,…},{role:user,…}], temperature, max_tok
 
 **[M3] What the breaker counts:** each API attempt that ends in a `transient` error, including attempts that are then retried. So with `transient_max: 3`, two units' failures can trip it. A `refused` request ends `failed` until M4 adds the softened retry (§7.5).
 
-**[M4] One count per kind of call:** the breaker keeps a count of temporary errors in a row for each kind of call: `image`, `vision` and `llm` (a soften's or redesign's planner calls). A success resets only its own kind's count, and any count reaching `retry.circuit_breaker` pauses the run. So an outage of the vision model trips it even while images succeed. Changed after the final review, at the user's decision (2026-09-25). Once the run is stopping, no soften or redesign starts either.
+**[M4] One count per kind of call:** the breaker keeps a count of temporary errors in a row for each kind of call: `image`, `vision` and `llm` (a soften's or redesign's planner calls). A success resets only its own kind's count, and any count reaching `retry.circuit_breaker` pauses the run. So an outage of the vision model trips it even while images succeed. Changed after the final review, at the user's decision (2026-09-25). Once the run is stopping, no soften or redesign starts either. **[M5]** Anchor and mascot-sheet candidate calls count as `image` calls for the breaker.
 
 ### 9.6 Cost estimates (`config/pricing.yaml`)
 These formulas are used only for **pre-call estimates** and for calls with no
@@ -1068,6 +1082,11 @@ Exit codes: `0` success; `1` user or validation error; `2` a pause (budget, dail
 - Images made before QC existed are checked, not made again.
 - A run that ends with `needs_review` units exits 0.
 
+**[M5] `bootstrap` and `compare`:**
+- `stickman bootstrap [--candidates N] [--approve-anchor N | --approve-mascot N] [--force]`. Its first line is `Bootstrap: style v<N>`, as it has no project. Approving needs no credentials. It holds `library/_bootstrap/v<N>/.lock`.
+- `stickman compare [-p <planned project>] [--new] [--yes] [--force]` replaces `--script`: plan the script with `stickman new` first. It shows the estimate and asks before spending, unless `--yes`. Running it again continues the newest comparison of that project; `--new` starts another. It needs a finished bootstrap.
+- Pause messages name the command that continues the work (`stickman bootstrap`, `stickman compare -p …`).
+
 ---
 
 ## 14. Export
@@ -1127,6 +1146,13 @@ Exit codes: `0` success; `1` user or validation error; `2` a pause (budget, dail
   - estimated cost per image
 - **Your decisions:** you set `image.model`, the QC thresholds, `render.timeout_s` (about 3× the 90th-percentile time), `render.est_seconds_per_image` and `budget.weekly_usd` in `settings.yaml`.
 
+**[M5] As built (the user's decisions, 2026-09-26):**
+- **Runs:** Klein 4B only, as `klein-4b-refs` (the project's size, with references), `klein-4b-no-refs` (no references) and `klein-4b-small-refs` (1280×720 or 720×1280, with references — plan.md's small-size candidate). Klein 9B is left out: about 22k neurons, and commercial use of its output is unconfirmed (§15 #10).
+- **Folder:** `projects/<date>_compare_<source slug>/` with `compare.json`, `source_plan.yaml` (a frozen copy), `runs/<run id>/` (state, images, logs) and `export/compare.html`. There's no `plan.yaml` at the top, so it's never taken for a project.
+- **No QC retries** (`retry.qc_max: 0`): the report measures first images. Each run is rendered by the normal renderer, so a daily-limit pause continues on the next run.
+- **Extras** have no sheets until M7, so they appear in the text only.
+- **Report:** per run, images, QC pass rate, no-text failure rate (images where the vision model saw text), `character_count` failures, median and 90th-percentile time, and cost per image in USD and neurons; plus a suggested `render.timeout_s` (3 × p90, rounded up to 10 s, at least 30) and `render.est_seconds_per_image` (the median). The same numbers are printed on the console.
+
 ---
 
 ## 15. Open questions to settle in M0 (update this spec with the answers)
@@ -1151,7 +1177,7 @@ Cloudflare fixtures, generated images, neuron costs and the style verdict — is
     - **Action:** before M5, get written confirmation from Cloudflare (support ticket, or its service-specific terms for Workers AI partner models) that outputs of `flux-2-klein-9b` and `flux-2-dev` may be used commercially. **If that isn't confirmed, restrict `compare` and the default model to Klein 4B.**
     - **USER ACTION: still pending as of Task 14** — no support ticket opened yet. See `docs/m0-findings.md` row 10.
 11. The Workers Paid plan's monthly fee. — **USER ACTION: still pending as of Task 14** — not yet checked in the dashboard. **New fact found in M0:** the Cloudflare account is currently on the **Workers AI free daily allocation** (10,000 neurons/day), not usage-based Workers Paid billing — M0's `style`/`anchor-leak` probe run hit HTTP 429/code 4006 partway through. See `docs/m0-findings.md` row 11 and plan.md §4.
-12. Whether the style anchor's content leaks into scenes (§8.1). If it does, switch to the single-figure anchor. — **Not run** — blocked by the account's daily neuron limit (both the dev and Klein-9B-fallback anchor attempts got HTTP 429/code 4006 before any generation). Pending: rerun `anchor-leak` after the Workers Paid upgrade or the daily reset. See `docs/m0-findings.md` row 12.
+12. Whether the style anchor's content leaks into scenes (§8.1). If it does, switch to the single-figure anchor. — **Not run** — blocked by the account's daily neuron limit (both the dev and Klein-9B-fallback anchor attempts got HTTP 429/code 4006 before any generation). Pending: rerun `anchor-leak` after the Workers Paid upgrade or the daily reset. See `docs/m0-findings.md` row 12. **[M5]** Checked through the comparison instead: see §8.1 [M5] and docs/m5-bootstrap-compare.md.
 
 ---
 
