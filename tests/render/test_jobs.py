@@ -115,18 +115,27 @@ MASCOT_WITH_SHEET = MascotConfig(name="Everyman", identity="a stickman with thre
 def test_a_job_knows_its_unit_and_what_qc_expects(tmp_path, plan_data):
     job = builder(tmp_path, plan_data).jobs(parse_plan(plan_data).units())[0]
     assert job.unit.id == "001" and job.unit.image_prompt == "prompt for 001"
-    assert job.expected == ExpectedPicture("Idea 001", 1, "Everyman: 1")
+    assert job.expected == ExpectedPicture("Idea 001", 1, "Everyman: 1", 1)
     assert job.vision_reference is None  # no mascot sheet before bootstrap (M5)
     assert job.fixes.strict_clause == load_style(tmp_path).strict_clause
     assert (job.fixes.props, job.fixes.locked, job.fixes.mascot_in_image_1) == ((), False, False)
     assert job.fixes.identity == load_mascot(tmp_path).identity
 
 
-def test_expected_figures_add_up_over_the_units_characters(tmp_path, plan_data):
+def test_expected_figures_are_a_range_over_the_units_characters(tmp_path, plan_data):
+    # Changed after the M4 live check: a group may show 1 up to its full size.
     plan_data["scenes"][1]["units"][0]["characters"].append(
         {"ref": "caveman_group", "action": "sitting", "emotion": "calm"})
     job = builder(tmp_path, plan_data).jobs(parse_plan(plan_data).units())[1]
-    assert job.expected == ExpectedPicture("Idea 002a", 4, "Everyman: 1, Caveman group: 3")
+    assert job.expected == ExpectedPicture("Idea 002a", 4, "Everyman: 1, Caveman group: 1-3", 2)
+
+
+def test_a_repeated_reference_counts_once(tmp_path, plan_data):
+    # 008a in the live check listed one group three times, and expected 9 figures.
+    plan_data["scenes"][1]["units"][1]["characters"] = [
+        {"ref": "caveman_group", "action": action, "emotion": "calm"} for action in ("sitting", "standing", "pointing")]
+    job = builder(tmp_path, plan_data).jobs(parse_plan(plan_data).units())[2]
+    assert job.expected == ExpectedPicture("Idea 002b", 3, "Caveman group: 1-3", 1)
 
 
 def test_the_mascot_sheet_goes_with_the_vision_check_of_mascot_units_once_it_exists(tmp_path, plan_data):

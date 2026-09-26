@@ -335,6 +335,17 @@ def test_the_vision_check_sees_the_image_and_what_the_unit_should_show(tmp_path,
     assert unit.versions[0].qc.vision.matches_visual_idea == 4
 
 
+def test_a_group_unit_passes_with_one_member_of_the_group(tmp_path, plan_data, fake_images, vision):
+    plan_data["scenes"][1]["units"][1]["characters"] = [{"ref": "caveman_group", "action": "sitting", "emotion": "calm"}]
+    client = fake_images(chat=scripted(vision, {"002b": [{"character_count": 1}]}))
+    run = Run(tmp_path, plan_data, client)
+    run.go(run.jobs[2:])
+    [call] = client.chat_calls
+    assert "\nExpected figures: 1-3 (Caveman group: 1-3).\n" in prompt_text(call["messages"])
+    [version] = run.store.unit("002b").versions
+    assert (version.qc.passed, version.qc.expected_figures, version.qc.expected_min_figures) == (True, 3, 1)
+
+
 def test_a_text_failure_is_retried_with_the_strict_clause_first_and_a_new_seed(tmp_path, plan_data, fake_images, vision):
     client = fake_images(chat=scripted(vision, {"001": [{"has_text": True, "text_seen": "ZZZ"}]}))
     run = Run(tmp_path, plan_data, client)

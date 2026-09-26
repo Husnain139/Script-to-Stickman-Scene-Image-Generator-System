@@ -43,6 +43,13 @@ def test_the_prompt_is_the_spec_prompt_with_the_units_expectations():
     assert set(schema["properties"]) == set(GOOD)
 
 
+def test_a_range_of_figures_is_written_min_hyphen_max():
+    expected = ExpectedPicture("Cavemen by a fire.", 4, "Everyman: 1, Caveman group: 1-3", 2)
+    assert "\nExpected figures: 2-4 (Everyman: 1, Caveman group: 1-3).\n" in vision_prompt(expected, reference=False)
+    same = ExpectedPicture("A man.", 1, "Everyman: 1", 1)
+    assert "\nExpected figures: 1 (Everyman: 1).\n" in vision_prompt(same, reference=False)
+
+
 def test_with_a_reference_the_prompt_names_the_second_image():
     assert "Look at the image and the reference character (the second image) and return" in vision_prompt(
         EXPECTED, reference=True

@@ -28,7 +28,8 @@ class QCResult(BaseModel):
     pixel: PixelResult
     vision: VisionReport | None = None  # None: the pixel checks failed, the check is off, or vision_error
     vision_error: str | None = None
-    expected_figures: int = Field(ge=0)
+    expected_figures: int = Field(ge=0)  # the most expected
+    expected_min_figures: int | None = Field(None, ge=0)  # the fewest; None: exactly expected_figures (older records)
     reference: bool = False  # a reference character image went with the vision check
     passed: bool
     reason: QCReason | None = None
@@ -39,12 +40,17 @@ class QCResult(BaseModel):
         return self.vision.matches_visual_idea if self.vision is not None else 0
 
 
-def figures_match(expected: int, seen: int) -> bool:
-    """Exactly when 3 or fewer are expected, within one above that (spec §11.3)."""
-    return seen == expected if expected <= 3 else abs(seen - expected) <= 1
+def figures_match(expected: int, seen: int, *, minimum: int | None = None) -> bool:
+    """From `minimum` (None: `expected`) up to `expected`, with one more either side when more than 3
+    are expected (spec §11.3)."""
+    fewest = expected if minimum is None else minimum
+    tolerance = 1 if expected > 3 else 0
+    return fewest - tolerance <= seen <= expected + tolerance
 
 
-def _vision_failures(report: VisionReport, *, expected_figures: int, reference: bool, min_idea_score: int) -> list[QCReason]:
+def _vision_failures(
+    report: VisionReport, *, expected_figures: int, min_figures: int | None, reference: bool, min_idea_score: int
+) -> list[QCReason]:
     failures: list[QCReason] = []
     if report.has_text:
         failures.append("text")
@@ -54,7 +60,7 @@ def _vision_failures(report: VisionReport, *, expected_figures: int, reference: 
         failures.append("watermark")
     if not report.anatomy_ok:
         failures.append("anatomy")
-    if not figures_match(expected_figures, report.character_count):
+    if not figures_match(expected_figures, report.character_count, minimum=min_figures):
         failures.append("character_count")
     if reference and report.mascot_matches_sheet is False:
         failures.append("mascot_mismatch")
@@ -68,6 +74,7 @@ def decide(
     vision: VisionReport | None = None,
     *,
     expected_figures: int,
+    min_figures: int | None = None,
     reference: bool = False,
     min_idea_score: int,
     vision_error: str | None = None,
@@ -77,7 +84,8 @@ def decide(
         failures: list[QCReason] = [pixel.reason]
     elif vision is not None:
         failures = _vision_failures(
-            vision, expected_figures=expected_figures, reference=reference, min_idea_score=min_idea_score
+            vision, expected_figures=expected_figures, min_figures=min_figures, reference=reference,
+            min_idea_score=min_idea_score,
         )
     elif vision_error is not None:
         failures = ["vision_error"]
@@ -86,5 +94,5 @@ def decide(
     reason = min(failures, key=REASON_ORDER.index) if failures else None
     return QCResult(
         pixel=pixel, vision=vision, vision_error=vision_error, expected_figures=expected_figures,
-        reference=reference, passed=reason is None, reason=reason,
+        expected_min_figures=min_figures, reference=reference, passed=reason is None, reason=reason,
     )

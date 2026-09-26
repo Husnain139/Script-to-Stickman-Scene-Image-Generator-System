@@ -43,8 +43,18 @@ class ExpectedPicture:
     """What the unit's picture should show, for the prompt."""
 
     visual_idea: str
-    figures: int  # the stick figures expected in total
-    cast: str  # "Everyman: 1, Caveman group: 3", or "none"
+    figures: int  # the most stick figures expected in total
+    cast: str  # "Everyman: 1, Caveman group: 1-3", or "none"
+    min_figures: int | None = None  # the fewest (one per distinct character); None: the same as figures
+
+    @property
+    def fewest(self) -> int:
+        return self.figures if self.min_figures is None else self.min_figures
+
+    @property
+    def figures_text(self) -> str:
+        """The count as the prompt writes it: 3, or 1-3 for a range (an ASCII hyphen)."""
+        return str(self.figures) if self.fewest == self.figures else f"{self.fewest}-{self.figures}"
 
 
 _PROMPT = """You are a strict quality checker for black-and-white stickman illustrations. Look at the image{reference} and return ONLY JSON matching the schema. Expected: {visual_idea}.
@@ -70,7 +80,7 @@ def vision_prompt(expected: ExpectedPicture, *, reference: bool) -> str:
     return _PROMPT.format(
         reference=" and the reference character (the second image)" if reference else "",
         visual_idea=expected.visual_idea.strip().rstrip("."),
-        figures=expected.figures,
+        figures=expected.figures_text,
         cast=expected.cast,
         schema=json.dumps(inline_schema(VisionReport), ensure_ascii=False),
     )

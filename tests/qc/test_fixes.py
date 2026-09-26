@@ -61,6 +61,17 @@ def test_one_expected_figure_is_singular():
     assert prompt.endswith("Exactly 1 stick figure in total: Everyman: 1.")
 
 
+def test_a_range_of_figures_asks_for_between_the_two():
+    expected = ExpectedPicture("A man and cavemen.", 4, "Everyman: 1, Caveman group: 1-3", 2)
+    prompt = retry_prompt(BASE, ["character_count"], fix(expected=expected))
+    assert prompt.endswith("Between 2 and 4 stick figures in total: Everyman: 1, Caveman group: 1-3.")
+
+
+def test_the_same_minimum_and_maximum_is_still_exact():
+    prompt = retry_prompt(BASE, ["character_count"], fix(expected=ExpectedPicture("A man.", 1, "Everyman: 1", 1)))
+    assert prompt.endswith("Exactly 1 stick figure in total: Everyman: 1.")
+
+
 def test_no_expected_figures_asks_for_none():
     prompt = retry_prompt(BASE, ["character_count"], fix(expected=ExpectedPicture("A clock.", 0, "none")))
     assert prompt.endswith("No stick figures at all.")

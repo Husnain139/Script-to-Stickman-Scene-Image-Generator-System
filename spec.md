@@ -695,6 +695,7 @@ the pose described above.
 - A redesign of a unit QC already softened keeps `softened` and its `safety filter: ` reason, and its hint also asks to stay symbolic and tasteful.
 - No rewrite starts once the run is stopping (§9.5).
 - A refused request counts as an attempt toward `retry.qc_max`: with `qc_max: 0` it isn't softened, and the unit becomes `needs_review`.
+- The `character_count` sentence says "Exactly 1 stick figure" for one figure. For a range of figures (§11.3), it says *"Between {min} and {max} stick figures in total: {list}."*
 
 ---
 
@@ -953,6 +954,8 @@ Expected figures: {N} ({list of cast names with figure counts}).
 ```
 **Schema:** `{has_text, text_seen, style_ok, anatomy_ok, watermark_like, character_count, matches_visual_idea, mascot_matches_sheet|null, notes}`
 
+**[M4] The expected figures are a range:** the line reads `Expected figures: {min}-{max} ({list}).` (an ASCII hyphen), or `Expected figures: {N} ({list}).` when the two are equal. The list names each distinct character once, in first-seen order, with `1` for a single figure and `1-N` for a group: `Everyman: 1, Early Humans: 1-3`. See §11.3 for the counts.
+
 ### 11.3 Deciding pass or fail, and retries
 - **Passing:** every pixel check passes, and:
   - `has_text` is false, `style_ok` is true, `anatomy_ok` is true and `watermark_like` is false
@@ -969,6 +972,8 @@ Expected figures: {N} ({list of cast names with figure counts}).
 - **Which version becomes current:** the best among the chain's versions made from the unit's latest fields (a soften changes them), so the current image never shows an old design. When none was made from them, the unit has no current version (§5.2).
 - **`vision_error`** (the checker answered, but unusably; one it couldn't reach leaves the image unchecked, §9.4) fails without a retry, and ranks after every other reason.
 - **A refused image request** counts as `safety_filtered` with no image.
+- **The expected figures are a range.** Each distinct character `ref` in the unit counts once, however often it is listed. The minimum is the number of distinct refs, since each shows at least one figure. The maximum is the sum of their cast entries' `figures`, so a group may appear as 1 up to its full size. A count passes when `min ≤ seen ≤ max`. Above 3 expected (the maximum), the ±1 leniency applies at both ends: `min − 1 ≤ seen ≤ max + 1`. The QC result records both (`expected_figures` is the maximum, `expected_min_figures` the minimum; older records lack it, meaning exactly `expected_figures`).
+  - Why: in the M4 live check (`docs/m4-qc-check.md`), 7 of 13 `character_count` failures were false. The planner uses a group entry for a scene that shows one member, and repeats one entry per member (one unit listed a group of 3 three times and expected 9). The count fix then pushed images away from their visual idea. Changed after the live check, at the user's decision (2026-09-26).
 
 ---
 

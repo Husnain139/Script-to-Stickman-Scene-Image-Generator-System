@@ -136,9 +136,13 @@ class JobBuilder:
         return path
 
     def expected_picture(self, unit: PlanUnit) -> ExpectedPicture:
-        infos = [self._cast[character.ref] for character in unit.characters]
-        cast = ", ".join(f"{info.name}: {info.figures}" for info in infos) or "none"
-        return ExpectedPicture(unit.visual_idea, sum(info.figures for info in infos), cast)
+        """Each distinct character once, showing at least one figure and at most its cast entry's figures:
+        a group may appear as one member (changed after the M4 live check)."""
+        refs = dict.fromkeys(character.ref for character in unit.characters)
+        infos = [self._cast[ref] for ref in refs]
+        shown = [(info.name, "1" if info.figures == 1 else f"1-{info.figures}") for info in infos]
+        cast = ", ".join(f"{name}: {figures}" for name, figures in shown) or "none"
+        return ExpectedPicture(unit.visual_idea, sum(info.figures for info in infos), cast, len(infos))
 
     def jobs(self, units: Sequence[PlanUnit]) -> list[RenderJob]:
         empty = [unit.id for unit in units if not unit.image_prompt.strip()]

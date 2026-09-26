@@ -216,7 +216,7 @@ def vision_reply(**changes):
 
 def expected_figures(messages):
     text = next(part["text"] for part in messages[0]["content"] if part["type"] == "text")
-    return int(re.search(r"Expected figures: (\d+)", text).group(1))
+    return int(re.search(r"Expected figures: (?:\d+-)?(\d+)", text).group(1))  # the most, for a range
 
 
 def passing_vision(model, messages):

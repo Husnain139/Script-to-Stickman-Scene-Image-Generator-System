@@ -13,6 +13,7 @@ BACKGROUND_FIX = "The entire background is plain white. Do not fill or darken th
 STYLE_FIX = "Pure black ink lines on pure white. Flat. No colour, no grey, no shading, not realistic."
 ANATOMY_FIX = "Each character has exactly one head, two arms and two legs."
 COUNT_FIX = "Exactly {figures} stick {noun} in total: {cast}."
+RANGE_COUNT_FIX = "Between {fewest} and {figures} stick figures in total: {cast}."
 NO_FIGURES_FIX = "No stick figures at all."
 MASCOT_FIX = "The main character must have exactly the same head and hair as image 1: {identity}."
 MASCOT_FIX_NO_REF = "The main character must have exactly this head and hair: {identity}."
@@ -64,8 +65,11 @@ def _sentence(reason: str, fix: FixContext) -> str | None:
     if reason == "anatomy":
         return ANATOMY_FIX
     if reason == "character_count":
-        if fix.expected.figures == 0:
+        expected = fix.expected
+        if expected.figures == 0:
             return NO_FIGURES_FIX
+        if expected.fewest != expected.figures:
+            return RANGE_COUNT_FIX.format(fewest=expected.fewest, figures=expected.figures, cast=expected.cast)
         noun = "figure" if fix.expected.figures == 1 else "figures"
         return COUNT_FIX.format(figures=fix.expected.figures, noun=noun, cast=fix.expected.cast)
     if reason == "mascot_mismatch":

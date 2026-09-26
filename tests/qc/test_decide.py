@@ -73,6 +73,28 @@ def test_figures_match_exactly_up_to_three_and_within_one_above(expected, seen, 
     assert figures_match(expected, seen) is ok
 
 
+@pytest.mark.parametrize(("minimum", "expected", "seen", "ok"), [
+    (1, 3, 0, False), (1, 3, 1, True), (1, 3, 2, True), (1, 3, 3, True), (1, 3, 4, False),  # a group of 3
+    (2, 4, 1, True), (2, 4, 5, True), (2, 4, 0, False), (2, 4, 6, False),  # over 3: one either side
+    (3, 3, 2, False), (3, 3, 3, True), (None, 3, 2, False),  # min == max, or None, is the old rule
+])
+def test_figures_match_a_range_from_the_minimum(minimum, expected, seen, ok):
+    assert figures_match(expected, seen, minimum=minimum) is ok
+
+
+@pytest.mark.parametrize(("seen", "ok"), [(0, False), (1, True), (2, True), (3, True), (4, False)])
+def test_a_group_only_unit_accepts_one_up_to_the_whole_group(seen, ok):
+    result = decide(pixel(), report(character_count=seen), expected_figures=3, min_figures=1, min_idea_score=3)
+    assert result.passed is ok
+    assert (result.expected_figures, result.expected_min_figures) == (3, 1)
+
+
+def test_an_older_qc_record_has_no_minimum():
+    old = check(report()).model_dump(mode="json")
+    del old["expected_min_figures"]
+    assert QCResult.model_validate(old).expected_min_figures is None
+
+
 def test_the_mascot_check_counts_only_when_a_reference_was_sent():
     assert check(report(mascot_matches_sheet=False)).passed is True
     assert check(report(mascot_matches_sheet=False), reference=True).reason == "mascot_mismatch"

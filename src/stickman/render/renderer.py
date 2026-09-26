@@ -433,6 +433,7 @@ class Renderer:
         pixel = await asyncio.to_thread(pixel_check, image, self._qc)
         common = {
             "expected_figures": job.expected.figures,
+            "min_figures": job.expected.fewest,
             "reference": job.vision_reference is not None,
             "min_idea_score": self._qc.min_idea_score,
         }
