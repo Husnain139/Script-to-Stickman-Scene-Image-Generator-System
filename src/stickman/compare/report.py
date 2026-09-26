@@ -1,6 +1,10 @@
 """The model comparison's report (spec §14.4): per run, the QC pass rate, the no-text failure rate,
-character_count failures, the time and cost per image; export/compare.html shows every image with its
-QC result. With no QC retries in a comparison, every version is a first try."""
+character_count failures, refusals, the time and cost per image; export/compare.html shows every image
+with its QC result. With no QC retries in a comparison, every version is a first try.
+
+The numbers use one image per picked unit and run, the one the report shows (the current version, else
+the latest), so an older image of a unit made again never counts. A request refused with no image counts
+as a failed first try in the pass rate, and has no time or cost."""
 
 from __future__ import annotations
 
@@ -16,6 +20,7 @@ from stickman.compare.setup import RUNS_DIR, CompareRun, CompareSetup
 from stickman.fsutil import safe_write
 from stickman.plan.models import Plan
 from stickman.pricing import format_usd, usd_neurons
+from stickman.qc.decide import figures_match
 from stickman.render.state import StateStore, Version
 
 REPORT = "export/compare.html"
@@ -36,6 +41,7 @@ class RunStats:
     images: int
     checked: int
     passed: int
+    refusals: int  # requests the safety filter refused with no image: failed first tries, with no time or cost
     vision_checked: int
     text_failures: int
     count_failures: int
@@ -45,7 +51,8 @@ class RunStats:
 
     @property
     def pass_rate(self) -> float | None:
-        return self.passed / self.checked if self.checked else None
+        tries = self.checked + self.refusals
+        return self.passed / tries if tries else None
 
     @property
     def text_rate(self) -> float | None:
@@ -66,15 +73,18 @@ def collect(folder: Path, setup: CompareSetup) -> tuple[list[RunStats], dict[tup
     cells: dict[tuple[str, str], Cell] = {}
     for run in setup.runs:
         state = StateStore.load(folder / RUNS_DIR / run.id).state
-        versions: list[Version] = []
+        versions: list[Version] = []  # one per unit: the image the report shows
+        refusals = 0
         for unit_id in picked:
             unit = state.units.get(unit_id)
             if unit is None or not unit.versions:
+                if unit is not None and (unit.error or "").startswith("refused"):
+                    refusals += 1
                 cells[(run.id, unit_id)] = Cell(unit.status if unit is not None else "planned", None, None)
                 continue
-            versions += unit.versions
             current = unit.version(unit.current_version) if unit.current_version is not None else None
             shown = current or unit.versions[-1]
+            versions.append(shown)
             cells[(run.id, unit_id)] = Cell(unit.status, shown, f"../{RUNS_DIR}/{run.id}/{shown.file}")
         checked = [v for v in versions if v.qc is not None]
         looked = [v for v in checked if v.qc.vision is not None]
@@ -84,9 +94,14 @@ def collect(folder: Path, setup: CompareSetup) -> tuple[list[RunStats], dict[tup
             images=len(versions),
             checked=len(checked),
             passed=sum(v.qc.passed for v in checked),
+            refusals=refusals,
             vision_checked=len(looked),
             text_failures=sum(v.qc.vision.has_text for v in looked),
-            count_failures=sum(v.qc.reason == "character_count" for v in checked),
+            # From the vision report, not qc.reason: text, style or anatomy would hide an extra figure.
+            count_failures=sum(
+                not figures_match(v.qc.expected_figures, v.qc.vision.character_count, minimum=v.qc.expected_min_figures)
+                for v in looked
+            ),
             median_s=statistics.median(seconds) if seconds else None,
             p90_s=percentile(seconds, 0.9),
             usd_per_image=sum(v.est_cost_usd for v in versions) / len(versions) if versions else None,
@@ -118,14 +133,14 @@ def _cost(value: float | None) -> str:
 
 def report_lines(stats: Sequence[RunStats]) -> list[str]:
     lines = [
-        f"{'Run':<22} {'size':<10} {'refs':<5} {'images':>6} {'QC pass':>8} {'no-text fail':>13} "
+        f"{'Run':<22} {'size':<10} {'refs':<5} {'images':>6} {'refused':>7} {'QC pass':>8} {'no-text fail':>13} "
         f"{'count fail':>11} {'median':>8} {'p90':>8}  per image"
     ]
     for item in stats:
         size = f"{item.run.width}x{item.run.height}"
         lines.append(
             f"{item.run.id:<22} {size:<10} {'yes' if item.run.references else 'no':<5} {item.images:>6} "
-            f"{_pct(item.pass_rate):>8} {_pct(item.text_rate):>13} {item.count_failures:>11} "
+            f"{item.refusals:>7} {_pct(item.pass_rate):>8} {_pct(item.text_rate):>13} {item.count_failures:>11} "
             f"{_secs(item.median_s):>8} {_secs(item.p90_s):>8}  {_cost(item.usd_per_image)}"
         )
     found = suggestion(stats)
@@ -178,7 +193,8 @@ def write_report(
     ideas = {unit.id: unit.visual_idea for unit in plan.units()}
     stat_rows = "\n".join(
         f"<tr><th scope=row>{e(item.run.id)}</th><td>{item.run.width}×{item.run.height}</td>"
-        f"<td>{'yes' if item.run.references else 'no'}</td><td>{item.images}</td><td>{_pct(item.pass_rate)}</td>"
+        f"<td>{'yes' if item.run.references else 'no'}</td><td>{item.images}</td><td>{item.refusals}</td>"
+        f"<td>{_pct(item.pass_rate)}</td>"
         f"<td>{_pct(item.text_rate)}</td><td>{item.count_failures}</td><td>{_secs(item.median_s)}</td>"
         f"<td>{_secs(item.p90_s)}</td><td>{e(_cost(item.usd_per_image))}</td></tr>"
         for item in stats
@@ -204,9 +220,10 @@ def write_report(
         f"<title>Model comparison · {e(setup.source)}</title><style>{_CSS}</style></head><body>",
         f"<h1>Model comparison</h1><p class=muted>Source: {e(setup.source)} · {len(setup.picks)} units × "
         f"{len(setup.runs)} runs · written {e(now.isoformat(timespec='minutes'))}. "
-        "No QC retries: every image is a first try.</p>",
+        "No QC retries: every image is a first try. The numbers use the image shown for each unit; "
+        "a request refused with no image counts as a failed first try.</p>",
         "<h2>Per run</h2><div class=scroll><table class=stats><thead><tr><th>Run</th><th>Size</th><th>References</th>"
-        "<th>Images</th><th>QC pass rate</th><th>No-text failure rate</th><th>character_count failures</th>"
+        "<th>Images</th><th>Refusals</th><th>QC pass rate</th><th>No-text failure rate</th><th>character_count failures</th>"
         "<th>Median time</th><th>90th percentile</th><th>Cost per image</th></tr></thead><tbody>",
         stat_rows,
         "</tbody></table></div>",

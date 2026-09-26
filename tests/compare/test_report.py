@@ -67,6 +67,44 @@ def test_character_count_failures_are_counted(tmp_path, drawings):
     assert refs.count_failures == 1
 
 
+def test_a_count_failure_is_counted_even_when_text_is_the_reason_shown(tmp_path, drawings):
+    both = qc_of(drawings, text=True, count=3)
+    assert both.reason == "text"
+    fill(tmp_path, "klein-4b-refs", {"001": (10.0, both), "002a": (10.0, qc_of(drawings, text=True))})
+    [refs, *_] = collect(tmp_path, SETUP)[0]
+    assert (refs.count_failures, refs.text_failures) == (1, 2)
+
+
+def version_of(unit, v, qc, seconds):
+    return Version(v=v, file=f"images/_history/{unit}_v{v}.png", seed=1, model=KLEIN_4B, width=1920, height=1088,
+                   fingerprint=f"sha256:{v}", prompt_sent="p", qc=qc, est_cost_usd=0.0023 * v, latency_s=seconds,
+                   created=datetime(2026, 9, 26, 10, 0, tzinfo=PK))
+
+
+def test_only_each_units_shown_version_counts_and_a_refusal_is_a_first_try_failure(tmp_path, drawings, plan_data):
+    run_dir = tmp_path / "runs" / "klein-4b-refs"
+    run_dir.mkdir(parents=True)
+    store = StateStore.load(run_dir)
+    store.add_version("001", version_of("001", 1, qc_of(drawings, text=True), 50.0), status="generating")
+    store.add_version("001", version_of("001", 2, qc_of(drawings), 10.0), status="generating")
+    store.finish("001", "generated", current=2)  # v1 is an older image, never counted
+    store.add_version("002a", version_of("002a", 1, qc_of(drawings, count=3), 20.0), status="needs_review")
+    store.finish("002a", "needs_review", current=None, clear_current=True)  # no current version: the latest shows
+    store.set_status("002b", "needs_review", error="refused: flagged by the safety system ***")
+    stats, cells = collect(tmp_path, SETUP)
+    refs = stats[0]
+    assert (refs.images, refs.checked, refs.passed, refs.refusals, refs.count_failures) == (2, 2, 1, 1, 1)
+    assert refs.pass_rate == pytest.approx(1 / 3)  # the refusal counts as a failed first try
+    assert refs.text_rate == 0.0
+    assert (refs.median_s, refs.usd_per_image) == (15.0, pytest.approx(0.0023 * 1.5))
+    assert cells[("klein-4b-refs", "001")].version.v == 2
+    text = "\n".join(report_lines(stats))
+    assert "refused" in text.splitlines()[0] and "33%" in text
+    page = write_report(tmp_path, SETUP, parse_plan(plan_data), stats, cells,
+                        now=datetime(2026, 9, 26, 12, 0, tzinfo=PK)).read_text(encoding="utf-8")
+    assert "<th>Refusals</th>" in page
+
+
 def test_the_lines_show_each_run_and_suggest_the_timeout(tmp_path, drawings):
     fill(tmp_path, "klein-4b-refs", {
         "001": (10.0, qc_of(drawings)), "002a": (20.0, qc_of(drawings)), "002b": (30.0, qc_of(drawings, text=True)),
