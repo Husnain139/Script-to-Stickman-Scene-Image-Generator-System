@@ -99,6 +99,7 @@ main { padding: var(--space); max-width: 1500px; margin: 0 auto; }
   border: 1px solid var(--rule);
   border-radius: var(--radius-mat);
 }
+.segment-item { display: flex; flex: 1 1 0; min-width: 3px; } /* its flex-grow is the unit's length */
 .segment { flex: 1 1 0; min-width: 3px; padding: 0; border: 0; border-radius: 2px; background: var(--planned); }
 .segment[data-status="generated"] { background: var(--ink); opacity: 0.55; }
 .segment[data-status="approved"] { background: var(--approved); }

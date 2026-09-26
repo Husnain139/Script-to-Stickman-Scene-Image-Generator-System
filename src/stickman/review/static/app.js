@@ -8,7 +8,13 @@ const STATUS_TEXT = {
   approved: "Approved", failed: "Failed", stale: "Stale",
 };
 const JOB_VERBS = { regenerate: "regenerating", replan: "replanning" };
-const ui = { data: null, view: "gallery", focus: null, overlay: null, editHash: null };
+// overlayUnit: the unit a dialog opened for, which it keeps; opener: the data-key of what opened it (focus goes
+// back there); hints: replan hints being typed, by unit, which survive a redraw; scrolledTo: the unit the queue
+// last scrolled to.
+const ui = {
+  data: null, view: "gallery", focus: null, overlay: null, overlayUnit: null, overlaySig: null, opener: null,
+  editHash: null, hints: {}, scrolledTo: null,
+};
 
 // --- small helpers (exported for the tests) ---
 
@@ -30,6 +36,22 @@ function describeJob(job) {
 
 function capital(text) {
   return text ? text[0].toUpperCase() + text.slice(1) : text;
+}
+
+// What the history dialog shows of a unit: it's redrawn only when this changes, not on every event.
+function versionsSignature(unit) {
+  if (!unit) return "";
+  return JSON.stringify([unit.id, unit.current_version, unit.approved_version,
+    unit.versions.map((version) => [version.v, version.qc ? version.qc.passed : null])]);
+}
+
+// The selector of the control with this data-key: a redraw puts the focus back on it.
+function keySelector(key) {
+  return `[data-key="${String(key).replace(/["\\]/g, "\\$&")}"]`;
+}
+
+function unitPath(unitId, action) {
+  return `/api/units/${encodeURIComponent(unitId)}/${action}`;
 }
 
 function h(tag, attrs, ...children) {
@@ -100,6 +122,7 @@ async function refresh() {
 
 function listen() {
   const events = new EventSource("/api/events");
+  events.addEventListener("open", () => refresh()); // after a reconnect: whatever was sent meanwhile is lost
   events.addEventListener("plan", () => refresh());
   events.addEventListener("state", () => refresh());
   events.addEventListener("job", (event) => {
@@ -144,9 +167,34 @@ function verdict(qc) {
     : h("span", { class: "fail" }, `failed QC: ${qc.reason.replace(/_/g, " ")}${idea}`);
 }
 
+// Every event redraws the page. The control that had the focus gets it back (by its data-key), with the
+// caret where it was, so a redraw never throws a keyboard user out or cuts a hint mid-word.
+function focusedControl() {
+  const active = document.activeElement;
+  if (!active || !active.dataset || !active.dataset.key) return null;
+  const typing = typeof active.selectionStart === "number";
+  return { key: active.dataset.key, start: typing ? active.selectionStart : null, end: typing ? active.selectionEnd : null };
+}
+
+function restoreFocus(kept) {
+  if (!kept || !kept.key) return;
+  const element = document.querySelector(keySelector(kept.key));
+  if (!element || element === document.activeElement) return;
+  element.focus({ preventScroll: true });
+  if (kept.start !== null && kept.start !== undefined && typeof element.setSelectionRange === "function") {
+    try {
+      element.setSelectionRange(kept.start, kept.end);
+    } catch (error) {
+      // not a text field
+    }
+  }
+}
+
 function render() {
   const data = ui.data;
   if (!data) return;
+  const main = document.getElementById("main");
+  const kept = main.contains(document.activeElement) ? focusedControl() : null;
   document.getElementById("project").textContent = data.project;
   document.title = `${data.project}: stickman review`;
   const budget = document.getElementById("budget");
@@ -158,10 +206,15 @@ function render() {
   const ids = viewIds();
   if (!ids.includes(ui.focus)) ui.focus = ids[0] || null;
   const body = { plan: planView, sheets: sheetsView, tests: testsView, gallery: galleryView }[ui.view](data);
-  document.getElementById("main").replaceChildren(problemsPanel(data), body);
-  if (ui.overlay !== "prompt") renderOverlay(); // never redraw the editor over what's being typed
-  const focused = document.querySelector(".queue-item.focused");
-  if (focused) focused.scrollIntoView({ block: "nearest" });
+  main.replaceChildren(problemsPanel(data), body);
+  restoreFocus(kept);
+  // Never redraw the prompt editor over what's being typed, nor the history unless its versions changed.
+  if (!ui.overlay || (ui.overlay === "history" && versionsSignature(overlayUnit()) !== ui.overlaySig)) renderOverlay();
+  if (ui.focus !== ui.scrolledTo) { // only when the focused unit changed: the queue doesn't snap back while scrolled
+    const focused = document.querySelector(".queue-item.focused");
+    if (focused) focused.scrollIntoView({ block: "nearest" });
+    ui.scrolledTo = ui.focus;
+  }
 }
 
 function problemsPanel(data) {
@@ -182,7 +235,7 @@ function planView(data) {
       : "",
     h("div", { class: "toolbar" },
       h("button", {
-        type: "button", class: "primary", disabled: approved || data.errors.length > 0,
+        type: "button", class: "primary", disabled: approved || data.errors.length > 0, "data-key": "plan:approve",
         onclick: () => act("POST", "/api/plan/approve", undefined, "Plan approved."),
       }, approved ? "Plan approved" : "Approve plan"),
       h("span", { class: "muted" }, `${data.units.length} units, ${formatTime(data.duration_end || 0)} long`)),
@@ -265,8 +318,8 @@ function stepSection(step, title, state, done, blurb, making) {
     c.approved
       ? h("span", { class: "tag ok" }, "Approved")
       : h("button", {
-          type: "button", disabled: c.previous_anchor || making,
-          onclick: () => act("POST", `/api/sheets/${step}/approve`, { candidate: c.n }, `Approved ${title.toLowerCase()} c${c.n}.`),
+          type: "button", disabled: c.previous_anchor || making, "data-key": `sheet:${step}:approve:${c.n}`,
+          onclick: () => act("POST", `/api/sheets/${encodeURIComponent(step)}/approve`, { candidate: c.n }, `Approved ${title.toLowerCase()} c${c.n}.`),
         }, "Approve")));
   return h("section", { class: "panel" },
     h("h2", {}, title, done ? " " : "", done ? h("span", { class: "tag ok" }, "done") : ""),
@@ -274,7 +327,8 @@ function stepSection(step, title, state, done, blurb, making) {
     cards.length ? h("div", { class: "candidates" }, cards) : h("p", { class: "empty" }, "No candidates yet."),
     h("button", {
       type: "button", title: "Spends neurons: two images and their checks", disabled: making,
-      onclick: () => act("POST", `/api/sheets/${step}/regenerate`),
+      "data-key": `sheet:${step}:more`,
+      onclick: () => act("POST", `/api/sheets/${encodeURIComponent(step)}/regenerate`),
     }, "Make 2 more"));
 }
 
@@ -287,7 +341,7 @@ function testsView(data) {
   }
   return h("div", {},
     h("div", { class: "toolbar" }, h("button", {
-      type: "button", class: "primary", disabled: data.approvals.tests,
+      type: "button", class: "primary", disabled: data.approvals.tests, "data-key": "tests:approve",
       onclick: () => act("POST", "/api/tests/approve", undefined, "Tests approved."),
     }, data.approvals.tests ? "Tests approved" : "Approve tests and start the batch"), shortcutsHint()),
     galleryBody(data, data.test_units));
@@ -299,7 +353,7 @@ function galleryView(data) {
     timeline(data),
     h("div", { class: "toolbar" },
       h("button", {
-        type: "button", disabled: remaining === 0,
+        type: "button", disabled: remaining === 0, "data-key": "units:approve-remaining",
         onclick: () => act("POST", "/api/units/approve-remaining", undefined, `Approved ${remaining} unit(s).`),
       }, remaining ? `Approve all remaining (${remaining})` : "Nothing left to approve"),
       shortcutsHint()),
@@ -315,16 +369,17 @@ function shortcutsHint() {
 function timeline(data) {
   return h("div", { class: "timeline", role: "list", "aria-label": "Units along the video" },
     data.units.map((unit) => {
-      const segment = h("button", {
-        type: "button", role: "listitem", class: `segment${unit.id === ui.focus ? " focused" : ""}`,
-        "data-status": unit.status,
+      // The list item wraps the button, so the button keeps its role.
+      const item = h("div", { role: "listitem", class: "segment-item" }, h("button", {
+        type: "button", class: `segment${unit.id === ui.focus ? " focused" : ""}`, "data-status": unit.status,
+        "data-key": `segment:${unit.id}`,
         title: `${unit.id} at ${formatTime(unit.start)}: ${STATUS_TEXT[unit.status]}`,
         "aria-label": `${unit.id} at ${formatTime(unit.start)}, ${STATUS_TEXT[unit.status]}`,
         onclick: () => focusUnit(unit.id),
-      });
+      }));
       // Through the CSSOM: the Content-Security-Policy blocks style="" attributes, not this.
-      segment.style.flexGrow = String(Math.max(unit.end - unit.start, 0.1));
-      return segment;
+      item.style.flexGrow = String(Math.max(unit.end - unit.start, 0.1));
+      return item;
     }));
 }
 
@@ -342,7 +397,7 @@ function queueItem(unit) {
   const focused = unit.id === ui.focus;
   return h("li", {}, h("button", {
     type: "button", class: `queue-item${focused ? " focused" : ""}`, "aria-current": focused ? "true" : null,
-    onclick: () => focusUnit(unit.id),
+    "data-key": `queue:${unit.id}`, onclick: () => focusUnit(unit.id),
   },
     current ? h("img", { src: current.url, alt: "", loading: "lazy" }) : h("span", { class: "no-image" }, "no image"),
     h("span", { class: "queue-text" }, h("span", { class: "queue-id" }, unit.id),
@@ -375,11 +430,19 @@ function detail(unit) {
       unit.status === "needs_review" && unit.review_reason ? h("p", { class: "fail" }, `Needs review: ${unit.review_reason.replace(/_/g, " ")}`) : "",
       unit.error && unit.status !== "failed" ? h("p", { class: "muted" }, unit.error) : ""),
     h("div", { class: "actions" },
-      h("button", { type: "button", class: "primary", disabled: !current || unit.status === "approved", onclick: () => approve(unit) },
-        unit.status === "approved" ? "Approved" : "Approve"),
-      h("button", { type: "button", title: "Spends neurons: a new image, its check and any retries", onclick: () => regenerate(unit) }, "Regenerate"),
-      h("button", { type: "button", onclick: () => openOverlay("prompt") }, "Edit prompt"),
-      h("button", { type: "button", disabled: !unit.versions.length, onclick: () => openOverlay("history") }, `History (${unit.versions.length})`),
+      h("button", {
+        type: "button", class: "primary", disabled: !current || unit.status === "approved",
+        "data-key": `detail:${unit.id}:approve`, onclick: () => approve(unit),
+      }, unit.status === "approved" ? "Approved" : "Approve"),
+      h("button", {
+        type: "button", title: "Spends neurons: a new image, its check and any retries",
+        "data-key": `detail:${unit.id}:regenerate`, onclick: () => regenerate(unit),
+      }, "Regenerate"),
+      h("button", { type: "button", "data-key": `detail:${unit.id}:prompt`, onclick: () => openOverlay("prompt") }, "Edit prompt"),
+      h("button", {
+        type: "button", disabled: !unit.versions.length, "data-key": `detail:${unit.id}:history`,
+        onclick: () => openOverlay("history"),
+      }, `History (${unit.versions.length})`),
       replanForm(unit)));
 }
 
@@ -387,15 +450,28 @@ function pick(unit, version, key, label) {
   return h("figure", { class: "pick" },
     h("div", { class: "paper" }, h("img", { src: version.url, alt: `${label} image of ${unit.id}, version ${version.v}` })),
     h("figcaption", {}, `${key}: ${label}, v${version.v}, `, verdict(version.qc)),
-    h("button", { type: "button", onclick: () => choose(unit, version.v) }, `Keep this one (${key})`));
+    h("button", { type: "button", "data-key": `detail:${unit.id}:keep:${key}`, onclick: () => choose(unit, version.v) },
+      `Keep this one (${key})`));
 }
 
 function replanForm(unit) {
-  const input = h("input", { type: "text", name: "hint", placeholder: "Replan with a hint, for example: show it at night", "aria-label": `Hint for replanning ${unit.id}` });
+  // The hint lives in ui.hints, not only in the field, so the redraw after every event keeps it.
+  const input = h("input", {
+    type: "text", name: "hint", maxlength: 500, placeholder: "Replan with a hint, for example: show it at night",
+    "aria-label": `Hint for replanning ${unit.id}`, "data-key": `hint:${unit.id}`,
+    oninput: (event) => { ui.hints[unit.id] = event.target.value; },
+  });
+  input.value = ui.hints[unit.id] || "";
   return h("form", {
     class: "replan",
-    onsubmit: (event) => { event.preventDefault(); replan(unit, input.value); },
-  }, input, h("button", { type: "submit" }, "Replan"));
+    onsubmit: async (event) => {
+      event.preventDefault();
+      if (await replan(unit, input.value)) {
+        delete ui.hints[unit.id]; // sent: the field starts empty again
+        render();
+      }
+    },
+  }, input, h("button", { type: "submit", "data-key": `detail:${unit.id}:replan` }, "Replan"));
 }
 
 function focusUnit(id) {
@@ -413,44 +489,58 @@ function step(delta) {
 // --- changes ---
 
 function approve(unit) {
-  return act("POST", `/api/units/${unit.id}/approve`, undefined, `Approved ${unit.id}.`);
+  return act("POST", unitPath(unit.id, "approve"), undefined, `Approved ${unit.id}.`);
 }
 
 function regenerate(unit) {
-  return act("POST", `/api/units/${unit.id}/regenerate`);
+  return act("POST", unitPath(unit.id, "regenerate"));
 }
 
 function choose(unit, v) {
-  return act("POST", `/api/units/${unit.id}/select-version`, { v }, `${unit.id} now shows version ${v}.`);
+  return act("POST", unitPath(unit.id, "select-version"), { v }, `${unit.id} now shows version ${v}.`);
 }
 
 function replan(unit, hint) {
-  return act("POST", `/api/units/${unit.id}/replan`, { hint });
+  return act("POST", unitPath(unit.id, "replan"), { hint });
 }
 
 // --- the history and the prompt editor ---
+
+function overlayUnit() {
+  return unitsById()[ui.overlayUnit] || null;
+}
 
 function openOverlay(kind) {
   const unit = focusedUnit();
   if (!unit || (kind === "history" && !unit.versions.length)) return;
   ui.overlay = kind;
+  ui.overlayUnit = unit.id; // the dialog stays with this unit, wherever the focus moves meanwhile
+  const opener = focusedControl();
+  ui.opener = opener ? opener.key : null;
   if (kind === "prompt") ui.editHash = ui.data.plan_hash; // the plan as it was when the editor opened (spec §12.4)
   renderOverlay();
 }
 
 function closeOverlay() {
   ui.overlay = null;
+  ui.overlayUnit = null;
   renderOverlay();
+  const opener = ui.opener;
+  ui.opener = null;
+  restoreFocus({ key: opener }); // back to what opened the dialog
 }
 
 function renderOverlay() {
   const root = document.getElementById("overlay");
-  const unit = focusedUnit();
+  const unit = overlayUnit();
   if (!ui.overlay || !unit) {
+    ui.overlay = null; // its unit left the plan: nothing to show
+    ui.overlaySig = null;
     root.hidden = true;
     root.replaceChildren();
     return;
   }
+  ui.overlaySig = versionsSignature(unit);
   root.hidden = false;
   root.replaceChildren(ui.overlay === "history" ? historyDialog(unit) : promptDialog(unit));
   const first = root.querySelector("[data-autofocus]");
@@ -490,10 +580,11 @@ function promptDialog(unit) {
 }
 
 async function savePrompt() {
-  const unit = focusedUnit();
+  const unitId = ui.overlayUnit; // the unit the editor opened for, not whichever is focused now
   const area = document.getElementById("prompt-text");
-  if (!unit || !area) return;
-  const saved = await act("PUT", `/api/units/${unit.id}/prompt`, { prompt: area.value, plan_hash: ui.editHash }, `Saved and locked the prompt of ${unit.id}.`);
+  if (!unitId || !area) return;
+  const saved = await act("PUT", unitPath(unitId, "prompt"), { prompt: area.value, plan_hash: ui.editHash },
+    `Saved and locked the prompt of ${unitId}.`);
   if (saved) closeOverlay();
 }
 
@@ -556,4 +647,4 @@ function start() {
 }
 
 if (typeof document !== "undefined") start();
-if (typeof module !== "undefined") module.exports = { formatTime, money, describeJob };
+if (typeof module !== "undefined") module.exports = { formatTime, money, describeJob, versionsSignature, keySelector, unitPath };
