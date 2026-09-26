@@ -8,9 +8,8 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from stickman.fsutil import safe_write
 from stickman.render.images import HISTORY_DIR, history_files, read_metadata
-from stickman.render.state import STATE_FILE, StateStore, UnitState, UnitStatus, Version
+from stickman.render.state import STATE_FILE, StateStore, UnitState, UnitStatus, Version, write_current_copy
 
 HAS_IMAGE = ("generated", "needs_review", "approved", "stale")
 
@@ -108,19 +107,26 @@ def _restore_current_images(store: StateStore, expected: Mapping[str, ExpectedUn
     for unit_id, want in expected.items():
         unit = store.state.units[unit_id]
         version = unit.version(unit.current_version) if unit.current_version is not None else None
-        if version is None:
-            # No version shows the unit's latest design (spec §5.2 [M4]): no current copy either.
-            (store.project_dir / "images" / f"{want.stem}.png").unlink(missing_ok=True)
-            continue
-        source = store.project_dir / version.file
-        if not source.is_file():
-            missing.append(version.file)
-            continue
-        data = source.read_bytes()
-        target = store.project_dir / "images" / f"{want.stem}.png"
-        if not target.is_file() or target.read_bytes() != data:
-            safe_write(target, data)
+        # No version shows the unit's latest design (spec §5.2 [M4]): no current copy either.
+        file = version.file if version is not None else None
+        if not write_current_copy(store.project_dir, want.stem, file):
+            missing.append(str(file))
     return missing
+
+
+def stale_status(unit: UnitState, fingerprint: str) -> UnitStatus:
+    """The status a unit has once compared with `fingerprint` (spec §10.4), without changing it: stale
+    when the approved (else current) version was made from other fields, back from stale when it matches
+    again, otherwise unchanged. Units without an image are never stale."""
+    if unit.status not in HAS_IMAGE:
+        return unit.status
+    compared = unit.approved_version or unit.current_version
+    version = unit.version(compared) if compared is not None else None
+    if version is None:
+        return unit.status
+    if version.fingerprint != fingerprint:
+        return "stale"
+    return _status_again(unit) if unit.status == "stale" else unit.status
 
 
 def _mark_stale(store: StateStore, expected: Mapping[str, ExpectedUnit]) -> tuple[list[str], list[str]]:
@@ -129,19 +135,14 @@ def _mark_stale(store: StateStore, expected: Mapping[str, ExpectedUnit]) -> tupl
     fresh: list[str] = []
     for unit_id, want in expected.items():
         unit = store.state.units[unit_id]
-        if unit.status not in HAS_IMAGE:
+        status = stale_status(unit, want.fingerprint)
+        if status == unit.status:
             continue
-        compared = unit.approved_version or unit.current_version
-        version = unit.version(compared) if compared is not None else None
-        if version is None:
-            continue
-        if version.fingerprint != want.fingerprint:
-            if unit.status != "stale":
-                unit.status = "stale"
-                stale.append(unit_id)
-        elif unit.status == "stale":
-            unit.status = _status_again(unit)
+        if status == "stale":
+            stale.append(unit_id)
+        else:
             fresh.append(unit_id)
+        unit.status = status
     return stale, fresh
 
 

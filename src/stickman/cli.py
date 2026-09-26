@@ -6,7 +6,10 @@ import asyncio
 import io
 import math
 import shutil
+import socket
 import sys
+import threading
+import webbrowser
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -19,7 +22,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, T
 from ruamel.yaml.comments import CommentedMap
 
 from stickman.bootstrap.approve import ApprovalError, approve_anchor, approve_mascot, mascot_version_mismatch
-from stickman.bootstrap.generate import CandidateJob, CandidateMaker, StepPlan, step_plan
+from stickman.bootstrap.generate import BOOTSTRAP_PROJECT, CandidateJob, CandidateMaker, StepPlan, step_plan
 from stickman.bootstrap.store import (
     BootstrapError,
     BootstrapStore,
@@ -31,7 +34,6 @@ from stickman.bootstrap.store import (
     ranked,
 )
 from stickman.budget import Budget
-from stickman.cf.client import CloudflareClient
 from stickman.cf.errors import CFError, ErrorCategory
 from stickman.compare.report import collect, report_lines, write_report
 from stickman.compare.runs import PreparedRun, prepare_run, render_runs
@@ -63,11 +65,10 @@ from stickman.plan.planner import (
     plan_script,
     replan_unit,
 )
-from stickman.plan.refresh import refresh_prompts, with_prompts
+from stickman.plan.refresh import refresh_plan_file
 from stickman.plan.store import LoadedPlan, PlanChangedError, load_plan, to_document, update_unit, write_plan
-from stickman.pricing import PricingConfig, format_usd, llm_cost_usd, load_pricing, usd_neurons
+from stickman.pricing import PricingConfig, format_usd, load_pricing, usd_neurons
 from stickman.project import ProjectError, check_unplanned, choose_project_dir, create_project, resolve_project, slugify
-from stickman.qc.vision import TYPICAL_TOKENS
 from stickman.render.calls import Calls
 from stickman.render.chain import chain_of
 from stickman.render.jobs import JobBuilder, JobError, RenderContext, RenderJob, random_seed
@@ -79,6 +80,7 @@ from stickman.render.rewrite import PlanRewriter
 from stickman.render.state import StateError, StateStore, needs_work
 from stickman.render.summary import summary_lines
 from stickman.runlog import RunLog, mask
+from stickman.runtime import build_client, check_usd, secrets_of
 from stickman.settings import (
     DEFAULT_CONFIG_FILES,
     AppConfig,
@@ -136,22 +138,7 @@ def _fail(message: str, code: int) -> NoReturn:
 
 
 def _secrets(cfg: AppConfig) -> tuple[str, ...]:
-    """What run logs, state.json and console messages built from Cloudflare errors mask: the token and
-    the account id (Cloudflare's routing errors echo the request path, which holds the account id)."""
-    if cfg.secrets is None:
-        return ()
-    return (cfg.secrets.cf_api_token.get_secret_value(), cfg.secrets.cf_account_id)
-
-
-def build_client(cfg: AppConfig) -> CloudflareClient:
-    if cfg.secrets is None:
-        raise ConfigError("Cloudflare credentials are not loaded")
-    return CloudflareClient(
-        cfg.secrets.cf_account_id,
-        cfg.secrets.cf_api_token.get_secret_value(),
-        plan=cfg.settings.account.plan,
-        timeout_s=cfg.settings.render.timeout_s,
-    )
+    return secrets_of(cfg)
 
 
 @app.command()
@@ -412,7 +399,6 @@ def resume(
     _generate(workspace, project, force=force, limit=limit)
 
 
-BOOTSTRAP_PROJECT = "bootstrap"  # the ledger's project for bootstrap calls
 STEP_NAMES: dict[str, str] = {"anchor": "style anchor", "mascot": "mascot sheet"}
 
 
@@ -762,6 +748,92 @@ async def _compare_render(cfg: AppConfig, prepared: list[PreparedRun], meter: Me
             )
 
 
+def _port_free(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+# The page always holds an event stream open, and uvicorn would wait for it forever on Ctrl+C: open
+# connections get two seconds, then they're closed.
+SERVE_OPTIONS = {"log_level": "warning", "timeout_graceful_shutdown": 2}
+BROWSER_DELAY_S = 0.8  # the server is listening by then; opening sooner can show "connection refused"
+
+
+def _open_browser(url: str) -> None:
+    webbrowser.open(url)
+
+
+def _open_when_listening(url: str) -> threading.Timer:
+    timer = threading.Timer(BROWSER_DELAY_S, _open_browser, args=(url,))
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def _serve(site: object, host: str, port: int) -> None:
+    import uvicorn
+
+    uvicorn.run(site, host=host, port=port, **SERVE_OPTIONS)  # type: ignore[arg-type]
+
+
+@app.command()
+def review(
+    project: Path | None = typer.Option(None, "--project", "-p", help="Project folder or name. Default: the most recent."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't open the browser."),
+    workspace: Path = typer.Option(Path("."), "--workspace", "-w", help="Workspace folder."),
+) -> None:
+    """Open the review page (spec §12): the plan, sheets, tests and the gallery, on 127.0.0.1 only."""
+    root = workspace.resolve()
+    try:
+        directory = resolve_project(root, project)
+    except ProjectError as exc:
+        console.print("Project: (none found)")
+        _fail(str(exc), EXIT_USER_ERROR)
+    console.print(f"Project: {escape(directory.name)}")
+    if not directory.is_relative_to(root):
+        _fail(
+            f"{directory} is outside the workspace {root}. The review page serves only projects inside its "
+            "workspace: run `stickman review` with -w set to the project's workspace.",
+            EXIT_USER_ERROR,
+        )
+    try:
+        cfg = load_config(root)
+    except ConfigError:
+        try:
+            cfg = load_config(root, need_secrets=False)  # a settings error is raised again here, and exits 3
+        except ConfigError as exc:
+            _fail(str(exc), EXIT_CONFIG_ERROR)
+        console.print(
+            "[yellow]No Cloudflare credentials in .env: approving and editing work; regenerating, replanning and "
+            "making candidates need CF_ACCOUNT_ID and CF_API_TOKEN.[/yellow]"
+        )
+    host, port = cfg.settings.review.host, cfg.settings.review.port
+    if not _port_free(host, port):
+        _fail(
+            f"Port {port} on {host} is in use (another `stickman review`?). Stop it, or set review.port in "
+            "config/settings.yaml.",
+            EXIT_USER_ERROR,
+        )
+    from stickman.review.app import create_app  # the web stack loads only for this command
+
+    site = create_app(root, directory, cfg.settings, client_factory=lambda: build_client(cfg), secrets=_secrets(cfg))
+    url = f"http://{host}:{port}/"
+    console.print(escape(f"Review page: {url} (Ctrl+C stops it)"))
+    opener = None if no_browser else _open_when_listening(url)
+    try:
+        _serve(site, host, port)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if opener is not None:
+            opener.cancel()  # the server stopped before the browser opened: there's no page to show
+    console.print("Review page stopped.")
+
+
 HAND_EDITED_NOTE = (
     "These prompts don't match their fields (edited by hand?), so they were left as they are, although their "
     "images are sent with reference images the prompt doesn't describe. `stickman replan <unit>` rebuilds one; "
@@ -777,20 +849,24 @@ def _refresh_prompts(path: Path, ctx: RenderContext, loaded: LoadedPlan) -> Plan
         ctx.workspace, use_references=ctx.settings.image.use_references, style_version=plan.style_version,
         mascot=ctx.mascot, cast=plan.cast, library=ctx.library,
     )
-    refresh = refresh_prompts(plan, style=ctx.style, mascot=ctx.mascot, references=references)
+    try:
+        plan, refresh, _ = refresh_plan_file(path, loaded, style=ctx.style, mascot=ctx.mascot, references=references,
+                                             write=write_plan)
+    except PlanChangedError:
+        _fail(f"{path.name} changed on disk while the prompts were being rebuilt. Nothing was written; run the command again.",
+              EXIT_USER_ERROR)
+    except PlanValidationError as exc:
+        _fail(f"{path.name} was not written: the result failed validation (a bug): " + "; ".join(exc.errors[:5]), EXIT_USER_ERROR)
+    except OSError as exc:
+        _fail(f"Can't write {path}: {exc}. Nothing was generated; run the command again.", EXIT_USER_ERROR)
     if refresh.hand_edited:
         console.print(f"[yellow]{escape(HAND_EDITED_NOTE + ', '.join(refresh.hand_edited))}[/yellow]")
-    if not refresh.rebuilt:
-        return plan
-    for unit_id, prompt in refresh.rebuilt.items():
-        update_unit(loaded.doc, unit_id, {"image_prompt": prompt})
-    _write_plan(path, loaded.doc, expected_hash=loaded.hash, again=" Nothing was generated; run the command again.",
-                during="the prompts were being rebuilt")
-    console.print(escape(
-        f"Rebuilt the image prompts of {len(refresh.rebuilt)} unit(s) for the reference images that now exist: "
-        + ", ".join(refresh.rebuilt)
-    ))
-    return with_prompts(plan, refresh.rebuilt)
+    if refresh.rebuilt:
+        console.print(escape(
+            f"Rebuilt the image prompts of {len(refresh.rebuilt)} unit(s) for the reference images that now exist: "
+            + ", ".join(refresh.rebuilt)
+        ))
+    return plan
 
 
 def _generate(workspace: Path, project: Path | None, *, force: bool, limit: int | None) -> None:
@@ -887,11 +963,7 @@ def _generate_locked(
 
 
 def _check_usd(cfg: AppConfig, pricing: PricingConfig) -> float:
-    """What a typical vision check costs (qwen's tokens; Task 11 of the M4 plan measured them)."""
-    if not cfg.settings.qc.vision:
-        return 0.0
-    price = pricing.llm(cfg.settings.llm.vision_model)
-    return 0.0 if price is None else llm_cost_usd(price, *TYPICAL_TOKENS)
+    return check_usd(cfg.settings, pricing)
 
 
 def _check_only(store: StateStore, jobs: list[RenderJob]) -> set[str]:

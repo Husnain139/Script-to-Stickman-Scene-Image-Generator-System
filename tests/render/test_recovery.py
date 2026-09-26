@@ -5,7 +5,7 @@ from PIL import Image
 from stickman.qc.decide import decide
 from stickman.qc.pixel import PixelResult
 from stickman.render.images import encode_png
-from stickman.render.recovery import ExpectedUnit, recover
+from stickman.render.recovery import ExpectedUnit, recover, stale_status
 from stickman.render.state import StateStore, Version
 
 PK = timezone(timedelta(hours=5))
@@ -143,3 +143,15 @@ def test_the_current_copy_of_a_unit_with_no_current_version_is_removed(tmp_path)
     copy.write_bytes(b"old design")
     recover(store, EXPECTED)
     assert not copy.exists()
+
+
+def test_stale_status_changes_nothing_and_matches_the_stale_rule(tmp_path):
+    store = StateStore.load(tmp_path)
+    store.add_version("006a", version(1), status="generated")
+    unit = store.unit("006a")
+    assert stale_status(unit, "sha256:abc") == "generated"
+    assert stale_status(unit, "sha256:new") == "stale"
+    assert unit.status == "generated"  # unchanged
+    unit.status = "stale"
+    assert stale_status(unit, "sha256:abc") == "generated"  # it matches again
+    assert stale_status(store.unit("001"), "sha256:new") == "planned"  # no image: never stale

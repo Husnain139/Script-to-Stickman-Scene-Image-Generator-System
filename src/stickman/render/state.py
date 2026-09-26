@@ -48,6 +48,7 @@ class UnitState(_Model):
     approved_version: int | None = None
     versions: list[Version] = Field(default_factory=list)
     error: str | None = None  # [M3] the last API error of a unit that ended failed
+    compare_with: int | None = None  # [M6] shown beside the current version after a regeneration, until one is chosen
 
     def version(self, v: int) -> Version | None:
         return next((item for item in self.versions if item.v == v), None)
@@ -74,6 +75,24 @@ class ProjectState(_Model):
     test_units: list[str] = Field(default_factory=list)
     tests_approved: bool = False
     units: dict[str, UnitState] = Field(default_factory=dict)
+
+
+def write_current_copy(project_dir: Path, stem: str, version_file: str | None) -> bool:
+    """images/<stem>.png is a copy of the unit's current version, and is removed when it has none (spec §3).
+    `version_file` is the current version's file (relative to the project), or None. False when that file is
+    missing: the copy is then left as it is."""
+    target = project_dir / "images" / f"{stem}.png"
+    if version_file is None:
+        target.unlink(missing_ok=True)
+        return True
+    source = project_dir / version_file
+    if not source.is_file():
+        return False
+    data = source.read_bytes()
+    if not target.is_file() or target.read_bytes() != data:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        safe_write(target, data)
+    return True
 
 
 class StateStore:
@@ -137,6 +156,61 @@ class StateStore:
         elif current is not None:
             unit.current_version = current
         unit.error = error
+        self.save()
+
+    def approve(self, unit_id: str) -> None:
+        unit = self.unit(unit_id)
+        if unit.current_version is None:
+            raise ValueError(f"{unit_id} has no image to approve")
+        unit.approved_version = unit.current_version
+        unit.status = "approved"
+        unit.compare_with = None
+        unit.error = None
+        self.save()
+
+    def select_version(self, unit_id: str, v: int) -> None:
+        """Make version v current (a history pick, or 1/2 in the side-by-side view, spec §12.2). The
+        approval stays only if v is the approved version; otherwise the status comes from v's QC."""
+        unit = self.unit(unit_id)
+        version = unit.version(v)
+        if version is None:
+            raise KeyError(f"{unit_id} has no version {v}")
+        unit.current_version = v
+        unit.compare_with = None
+        unit.error = None
+        if unit.approved_version is not None and unit.approved_version != v:
+            unit.approved_version = None
+        if unit.approved_version == v:
+            unit.status = "approved"
+        elif version.qc is not None and not version.qc.passed:
+            unit.status = "needs_review"
+        else:
+            unit.status = "generated"  # an unchecked version is checked by the next run
+        self.save()
+
+    def begin_regeneration(self, unit_id: str) -> None:
+        """Before a regeneration: the current version is kept to compare with the new one, and the
+        approval is cleared, since the approved image won't be the one shown."""
+        unit = self.unit(unit_id)
+        unit.compare_with = unit.current_version
+        unit.approved_version = None
+        self.save()
+
+    def end_regeneration(
+        self, unit_id: str, *, current: int | None, approved: int | None, status: UnitStatus, error: str | None = None
+    ) -> None:
+        """A regeneration that made no image: the unit is as it was before begin_regeneration, its approval,
+        status and error text back, and nothing to compare. `error` is the unit's error from before the run
+        (spec §12.2 [M6]). A run that itself ended the unit `failed` with a fresh error of its own keeps
+        that one instead: the run's own chain (recover, a checker outage, a rewrite failure) had already
+        set it, and it tells the more current story."""
+        unit = self.unit(unit_id)
+        unit.current_version = current
+        unit.approved_version = approved
+        unit.status = status
+        unit.compare_with = None
+        if not (status == "failed" and unit.error):
+            unit.error = error
         self.save()
 
     def next_version(self, unit_id: str) -> int:

@@ -5,7 +5,15 @@ import pytest
 
 from stickman.qc.decide import decide
 from stickman.qc.pixel import PixelResult
-from stickman.render.state import ProjectState, StateError, StateStore, Version, needs_work, unchecked
+from stickman.render.state import (
+    ProjectState,
+    StateError,
+    StateStore,
+    Version,
+    needs_work,
+    unchecked,
+    write_current_copy,
+)
 
 PK = timezone(timedelta(hours=5))
 KLEIN_4B = "@cf/black-forest-labs/flux-2-klein-4b"
@@ -110,3 +118,98 @@ def test_units_a_run_takes_up(tmp_path):
     for status in ("needs_review", "approved", "stale", "generating"):
         store.set_status("006a", status)
         assert not needs_work(store.unit("006a")), status
+
+
+def checked(passed):
+    """A QC result that passes, or fails for `empty`."""
+    pixel = PixelResult(reason=None if passed else "empty", lum_std=30.0, lum_mean=250.0, ink_fraction=0.02,
+                        lap_var=900.0, white_fraction=0.97, colour_fraction=0.0, black_fraction=0.01)
+    return decide(pixel, expected_figures=1, min_idea_score=3)
+
+
+def test_approving_makes_the_current_version_the_approved_one(tmp_path):
+    store = StateStore.load(tmp_path)
+    store.add_version("001", version(1, "001"), status="generated")
+    store.approve("001")
+    unit = StateStore.load(tmp_path).unit("001")
+    assert (unit.status, unit.approved_version, unit.compare_with) == ("approved", 1, None)
+
+
+def test_a_unit_without_an_image_cannot_be_approved(tmp_path):
+    with pytest.raises(ValueError):
+        StateStore.load(tmp_path).approve("001")
+
+
+def test_a_regeneration_keeps_the_old_current_version_to_compare_and_clears_the_approval(tmp_path):
+    store = StateStore.load(tmp_path)
+    store.add_version("001", version(1, "001"), status="generated")
+    store.approve("001")
+    store.begin_regeneration("001")
+    unit = StateStore.load(tmp_path).unit("001")
+    assert (unit.compare_with, unit.approved_version, unit.current_version) == (1, None, 1)
+
+
+def test_choosing_a_version_makes_it_current_and_ends_the_comparison(tmp_path):
+    store = StateStore.load(tmp_path)
+    store.add_version("001", version(1, "001", qc=checked(True)), status="generated")
+    store.begin_regeneration("001")
+    store.add_version("001", version(2, "001", qc=checked(False)), status="needs_review")
+    store.select_version("001", 1)
+    unit = StateStore.load(tmp_path).unit("001")
+    assert (unit.current_version, unit.compare_with, unit.status) == (1, None, "generated")
+    store.select_version("001", 2)
+    assert StateStore.load(tmp_path).unit("001").status == "needs_review"
+
+
+def test_choosing_the_approved_version_keeps_the_approval_and_another_clears_it(tmp_path):
+    store = StateStore.load(tmp_path)
+    store.add_version("001", version(1, "001", qc=checked(True)), status="generated")
+    store.add_version("001", version(2, "001", qc=checked(True)), status="generated")
+    store.select_version("001", 1)
+    store.approve("001")
+    store.select_version("001", 1)
+    assert store.unit("001").status == "approved" and store.unit("001").approved_version == 1
+    store.select_version("001", 2)
+    assert store.unit("001").approved_version is None and store.unit("001").status == "generated"
+
+
+def test_choosing_an_unknown_version_is_refused(tmp_path):
+    store = StateStore.load(tmp_path)
+    store.add_version("001", version(1, "001"), status="generated")
+    with pytest.raises(KeyError):
+        store.select_version("001", 7)
+
+
+def test_an_older_state_json_without_compare_with_still_loads(tmp_path):
+    (tmp_path / "state.json").write_text('{"schema_version": 1, "units": {"001": {"status": "planned"}}}', encoding="utf-8")
+    assert StateStore.load(tmp_path).unit("001").compare_with is None
+
+
+def test_the_current_copy_is_the_current_versions_file_and_goes_when_there_is_none(tmp_path):
+    history = tmp_path / "images" / "_history"
+    history.mkdir(parents=True)
+    (history / "001_v1.png").write_bytes(b"one")
+    (history / "001_v2.png").write_bytes(b"two")
+    copy = tmp_path / "images" / "001_00-00.0.png"
+    assert write_current_copy(tmp_path, "001_00-00.0", "images/_history/001_v2.png")
+    assert copy.read_bytes() == b"two"
+    assert write_current_copy(tmp_path, "001_00-00.0", "images/_history/001_v1.png")
+    assert copy.read_bytes() == b"one"
+    assert not write_current_copy(tmp_path, "001_00-00.0", "images/_history/001_v9.png")  # missing: left as it is
+    assert copy.read_bytes() == b"one"
+    assert write_current_copy(tmp_path, "001_00-00.0", None)
+    assert not copy.exists()
+
+
+def test_a_regeneration_that_made_nothing_puts_the_unit_back_as_it_was(tmp_path):
+    store = StateStore.load(tmp_path)
+    store.add_version("001", version(1, "001"), status="generated")
+    store.approve("001")
+    store.begin_regeneration("001")
+    store.set_status("001", "planned")  # a budget stop before the first image
+    store.end_regeneration("001", current=1, approved=1, status="approved")
+    unit = StateStore.load(tmp_path).unit("001")
+    assert (unit.status, unit.approved_version, unit.current_version, unit.compare_with) == ("approved", 1, 1, None)
+    store.set_status("001", "failed", error="bad_request: again")  # a failed unit regenerated, failing again
+    store.end_regeneration("001", current=1, approved=None, status="failed")
+    assert StateStore.load(tmp_path).unit("001").error == "bad_request: again"

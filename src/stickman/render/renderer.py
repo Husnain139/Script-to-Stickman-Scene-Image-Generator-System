@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -35,7 +35,7 @@ from stickman.render.chain import Check, Finish, Render, chain_of, finish_step, 
 from stickman.render.images import HISTORY_DIR, ImageDecodeError, decode_image, encode_png, history_name
 from stickman.render.jobs import JobBuilder, JobError, RenderJob
 from stickman.render.rewrite import Rewriter, RewriteFailed, softened_by_qc
-from stickman.render.state import StateStore, UnitStatus, Version
+from stickman.render.state import StateStore, UnitStatus, Version, write_current_copy
 from stickman.runlog import RunLog, shorten
 from stickman.settings import ConfigError, QCSettings, RetrySettings
 
@@ -114,12 +114,16 @@ class Renderer:
         self._on_done = on_done
         self.control = control if control is not None else RunControl(retry.circuit_breaker)
         self.softened: list[str] = []  # units softened after a safety filter in this run
+        self._fresh: frozenset[str] = frozenset()  # units that start a new chain in this run
         self._calls = Calls(client, meter, log, self.control, retry=retry, qc=qc, vision_model=vision_model, sleep=sleep)
 
-    async def run(self, jobs: Sequence[RenderJob]) -> RunResult:
+    async def run(self, jobs: Sequence[RenderJob], *, fresh: Collection[str] = ()) -> RunResult:
         """Each job's unit, at most `concurrency` at once. A unit holds its slot for its whole chain, so
         vision calls share the image requests' limit (spec §10.3). Once the run is stopping, no new
-        request starts and the requests already out finish (spec §9.5)."""
+        request starts and the requests already out finish (spec §9.5). Units in `fresh` (regenerated from
+        the review page) start a new chain instead of continuing one; their earlier versions stay as a
+        record (spec §12.2 [M6])."""
+        self._fresh = frozenset(fresh)
         started = time.perf_counter()
         semaphore = asyncio.Semaphore(self._concurrency)
 
@@ -139,7 +143,8 @@ class Renderer:
         saved as it happens, so a run stopped or killed here continues the same chain next time."""
         unit_id = job.unit_id
         self._store.set_status(unit_id, "generating")
-        chain = chain_of(self._store.unit(unit_id), job.fingerprint)
+        # A regenerated unit starts a new chain; its earlier versions stay as a record (spec §12.2 [M6]).
+        chain = [] if unit_id in self._fresh else chain_of(self._store.unit(unit_id), job.fingerprint)
         images: dict[int, Image.Image] = {}  # images made in this run, by version, so QC needn't read them back
         refused = False
         error: str | None = None
@@ -309,14 +314,12 @@ class Renderer:
     def _finish(self, job: RenderJob, status: UnitStatus, current: int | None, error: str | None) -> None:
         """The final status, then the current copy images/<stem>.png. A kill between the two is put
         right by recover() (spec §5.2 [M3]). `current` None: no version shows the unit's latest design,
-        so it has no current version and no current copy (its versions stay in _history)."""
+        so it has no current version and no current copy (its versions stay in _history). A chain that
+        isn't a regeneration from the review page ends any side-by-side pair an earlier one left."""
+        if job.unit_id not in self._fresh:
+            self._store.unit(job.unit_id).compare_with = None  # saved by finish()
         self._store.finish(job.unit_id, status, current=current, clear_current=current is None,
                            error=error if status in ("needs_review", "failed") else None)
         unit = self._store.unit(job.unit_id)
         version = unit.version(unit.current_version) if unit.current_version is not None else None
-        project = self._store.project_dir
-        copy = project / "images" / f"{job.stem}.png"
-        if version is not None:
-            safe_write(copy, (project / version.file).read_bytes())
-        else:
-            copy.unlink(missing_ok=True)
+        write_current_copy(self._store.project_dir, job.stem, version.file if version is not None else None)

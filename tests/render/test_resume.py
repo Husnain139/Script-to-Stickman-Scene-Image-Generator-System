@@ -145,7 +145,7 @@ def test_resume_after_kills_finishes_with_no_lost_or_duplicate_images(
 ):
     rng = random.Random(seed)
     killer = Killer()
-    for module in (state, recovery, renderer):
+    for module in (state, renderer):  # the current copies are written by state.write_current_copy
         monkeypatch.setattr(module, "safe_write", killable_write(killer))
     project = tmp_path / "projects" / "2026-09-25_synthetic"
     project.mkdir(parents=True)
