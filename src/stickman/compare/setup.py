@@ -108,8 +108,9 @@ def find_compare(workspace: Path, source: Path) -> Path | None:
 
 
 def create_compare(folder: Path, source: Path, setup: CompareSetup) -> None:
-    """The frozen plan first, then compare.json, whose presence marks a finished setup."""
-    folder.mkdir(parents=True)
+    """The frozen plan first, then compare.json, whose presence marks a finished setup. A folder that
+    exists (another run created it first) raises FileExistsError, and nothing is written."""
+    folder.mkdir(parents=True, exist_ok=False)
     safe_write(folder / FROZEN_PLAN, (source / "plan.yaml").read_bytes())
     safe_write(folder / COMPARE_FILE, setup.model_dump_json(indent=2).encode("utf-8"))
 

@@ -65,6 +65,15 @@ def test_a_second_comparison_on_the_same_day_gets_its_own_folder(tmp_path, plan_
     assert find_compare(tmp_path, source) == second
 
 
+def test_creating_a_comparison_in_a_folder_that_exists_is_refused(tmp_path, plan_data):
+    source = source_project(tmp_path, plan_data)
+    folder = compare_dir(tmp_path, source, date(2026, 9, 26))
+    folder.mkdir(parents=True)
+    with pytest.raises(FileExistsError):
+        create_compare(folder, source, setup_for(source))
+    assert list(folder.iterdir()) == []
+
+
 def test_comparisons_of_other_projects_are_not_found(tmp_path, plan_data):
     source = source_project(tmp_path, plan_data)
     other = source_project(tmp_path, plan_data, name="2026-09-25_other")

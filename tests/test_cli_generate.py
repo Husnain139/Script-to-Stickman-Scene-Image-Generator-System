@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 from stickman import cli
 from stickman.cf.errors import CFError, ErrorCategory
 from stickman.plan.models import parse_plan
-from stickman.plan.store import load_plan, to_document, update_unit, write_plan
+from stickman.plan.store import PlanChangedError, load_plan, to_document, update_unit, write_plan
 from stickman.render.rewrite import SOFTEN_PREFIX
 from stickman.render.state import StateStore
 
@@ -367,6 +367,23 @@ def test_generate_rebuilds_tool_built_prompts_once_the_anchor_exists(workspace, 
     assert all(call["input_images"] == [anchor_bytes] for call in client.calls)
     again = generate(workspace)
     assert "Rebuilt the image prompts" not in again.output
+
+
+def test_plan_yaml_changing_during_the_prompt_rebuild_says_so(workspace, monkeypatch, fake_images, plan_data, built_prompts):
+    path = project(workspace) / "plan.yaml"
+    write_plan(path, to_document(parse_plan(built_prompts(plan_data))), expected_hash=None)
+    anchor(workspace)
+
+    def changed(*args, **kwargs):
+        raise PlanChangedError("plan.yaml changed")
+
+    monkeypatch.setattr(cli, "write_plan", changed)
+    client = use_images(monkeypatch, fake_images())
+    result = generate(workspace)
+    assert result.exit_code == 1, result.output
+    assert ("plan.yaml changed on disk while the prompts were being rebuilt. Nothing was written; run the command again."
+            in result.output)
+    assert "LLM" not in result.output and client.calls == []
 
 
 def test_hand_edited_prompts_are_left_as_they_are_with_a_warning(workspace, monkeypatch, fake_images):

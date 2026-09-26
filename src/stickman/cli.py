@@ -262,12 +262,15 @@ def _load_planning(root: Path) -> tuple[AppConfig, PlanningContext]:
         _fail(str(exc), EXIT_CONFIG_ERROR)
 
 
-def _write_plan(path: Path, doc: CommentedMap, *, expected_hash: str | None, again: str) -> None:
-    """The final plan.yaml write. Its failures become a message and exit 1, not a traceback."""
+def _write_plan(
+    path: Path, doc: CommentedMap, *, expected_hash: str | None, again: str, during: str = "the LLM was working"
+) -> None:
+    """The final plan.yaml write. Its failures become a message and exit 1, not a traceback. `during`:
+    what was happening while plan.yaml could change on disk."""
     try:
         write_plan(path, doc, expected_hash=expected_hash)
     except PlanChangedError:
-        _fail(f"{path.name} changed on disk while the LLM was working. Nothing was written; run the command again.", EXIT_USER_ERROR)
+        _fail(f"{path.name} changed on disk while {during}. Nothing was written; run the command again.", EXIT_USER_ERROR)
     except PlanValidationError as exc:
         _fail(f"{path.name} was not written: the result failed validation (a bug): " + "; ".join(exc.errors[:5]), EXIT_USER_ERROR)
     except OSError as exc:
@@ -673,7 +676,10 @@ def _create_compare(source: Path, folder: Path, ctx: RenderContext) -> None:
         picks=[ComparePick(category=p.category, unit=p.unit_id, filled=p.filled) for p in picks],
         runs=default_runs(ctx.settings, plan.aspect),
     )
-    create_compare(folder, source, setup)
+    try:
+        create_compare(folder, source, setup)
+    except FileExistsError:
+        _fail(f"Another stickman created {folder.name} just now. Nothing was written; run the command again.", EXIT_USER_ERROR)
     console.print(escape("Compared units: " + ", ".join(
         f"{p.unit_id} ({p.category.replace('_', ' ')}{', stand-in' if p.filled else ''})" for p in picks
     )))
@@ -768,7 +774,8 @@ def _refresh_prompts(path: Path, ctx: RenderContext, loaded: LoadedPlan) -> Plan
         return plan
     for unit_id, prompt in refresh.rebuilt.items():
         update_unit(loaded.doc, unit_id, {"image_prompt": prompt})
-    _write_plan(path, loaded.doc, expected_hash=loaded.hash, again=" Nothing was generated; run the command again.")
+    _write_plan(path, loaded.doc, expected_hash=loaded.hash, again=" Nothing was generated; run the command again.",
+                during="the prompts were being rebuilt")
     console.print(escape(
         f"Rebuilt the image prompts of {len(refresh.rebuilt)} unit(s) for the reference images that now exist: "
         + ", ".join(refresh.rebuilt)

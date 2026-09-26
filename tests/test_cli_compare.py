@@ -87,6 +87,24 @@ def test_new_starts_another_comparison(workspace, monkeypatch, fake_images, boot
     assert result.output.splitlines()[0] == f"Project: {COMPARE}-2"
 
 
+def test_a_folder_another_run_created_first_is_a_clean_error(workspace, monkeypatch, fake_images, bootstrapped):
+    bootstrapped(workspace)
+    real = cli.compare_dir
+
+    def raced(*args):
+        folder = real(*args)
+        folder.mkdir(parents=True)  # a concurrent first run got there between the choice and the mkdir
+        return folder
+
+    monkeypatch.setattr(cli, "compare_dir", raced)
+    client = use_images(monkeypatch, fake_images())
+    result = compare(workspace, "--yes")
+    assert result.exit_code == 1, result.output
+    assert f"Another stickman created {COMPARE} just now" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert client.calls == [] and list((workspace / "projects" / COMPARE).iterdir()) == []
+
+
 def test_it_asks_before_spending(workspace, monkeypatch, fake_images, bootstrapped):
     bootstrapped(workspace)
     client = use_images(monkeypatch, fake_images())
