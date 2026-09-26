@@ -65,7 +65,7 @@ def test_generate_makes_every_units_image_and_prints_the_summary(workspace, monk
     assert result.output.splitlines()[0] == f"Project: {FOLDER}"
     assert f"Generating 3 unit(s) on {KLEIN_4B}" in result.output
     assert f"Generating 3 unit(s) on {KLEIN_4B}, each checked by @cf/qwen/qwen3.8-27b" in result.output
-    assert "so about 24 more unit(s) fit (image and check)" in result.output
+    assert "so about 19 more unit(s) fit (image and check)" in result.output
     assert "Run finished · 3 units · done 3 · needs_review 0 · failed 0 · stale 0 · skipped 0" in result.output
     assert statuses(workspace) == {"001": "generated", "002a": "generated", "002b": "generated"}
     assert sorted(p.name for p in (project(workspace) / "images").glob("*.png")) == [

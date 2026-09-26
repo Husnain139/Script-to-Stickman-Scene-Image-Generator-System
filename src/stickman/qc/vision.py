@@ -19,7 +19,7 @@ VISION_MAX_SIDE = 1024  # px on the long side: small text stays readable
 VISION_MAX_TOKENS = 2048  # qwen also writes a reasoning field; only used tokens are billed
 VISION_ATTEMPTS = 2  # validation attempts; the second shows the model its errors
 IMAGE_TOKENS = 800  # per image, for the pre-call estimate (M0: two 768 px images + a question = 828 prompt tokens)
-TYPICAL_TOKENS = (1400, 500)  # input and output tokens of a typical check, for the free-plan message (Task 11 measures it)
+TYPICAL_TOKENS = (1300, 900)  # input and output tokens of a typical check, for the free-plan message (measured in M4 Task 11: means 1,249 and 801, rounded up)
 
 
 class VisionReport(BaseModel):
