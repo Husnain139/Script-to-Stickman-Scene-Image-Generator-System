@@ -160,8 +160,8 @@ class Renderer:
                             image = self._read(chain[-1])
                         except (OSError, ImageDecodeError) as exc:
                             # The file can't be read, so no version counts as current: the next run
-                            # makes a new image instead of failing the same check again. Any other
-                            # OSError in the check (a run-log or ledger write) propagates instead.
+                            # makes a new image instead of failing the same check again. An OSError
+                            # elsewhere in the check (below) fails only the unit, keeping its version.
                             self._finish(job, "failed", None, f"bad_image: can't read {chain[-1].file}: {exc}")
                             return
                     try:
@@ -172,6 +172,14 @@ class Renderer:
                         # The checker couldn't be reached: the image stays unchecked (qc null), and
                         # the next run checks it again without a new image (spec §9.4 [M4]).
                         self._store.set_status(unit_id, "failed", error=self._error_text(exc))
+                        return
+                    except OSError as exc:
+                        # A check-time OSError (a run-log or ledger write, say) fails only this unit,
+                        # keeping its current version. The image stays unchecked (qc null), so the
+                        # next run checks it again with no new image, same as the outage above.
+                        self._store.set_status(
+                            unit_id, "failed", error=f"check failed: {shorten(self._log.mask(str(exc)), ERROR_CHARS)}"
+                        )
                         return
                     self._store.set_qc(unit_id, step.v, qc)
                     continue

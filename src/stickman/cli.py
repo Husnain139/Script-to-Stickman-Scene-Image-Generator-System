@@ -716,8 +716,13 @@ def _compare_locked(
         estimate = sum(job.estimate_usd for job in to_make) + _check_usd(cfg, ctx.pricing) * len(jobs)
         how = f", each checked by {cfg.settings.llm.vision_model}" if cfg.settings.qc.vision else ", pixel checks only"
         per_run = ", ".join(f"{run.run.id} {len(run.jobs)}" for run in prepared if run.jobs)
+        check_only_count = len(jobs) - len(to_make)
+        counts = (
+            f"{len(to_make)} image(s) to make and {check_only_count} to check" if check_only_count
+            else f"{len(jobs)} image(s) to make"
+        )
         console.print(escape(
-            f"Comparing {len(setup.picks)} unit(s) × {len(setup.runs)} run(s): {len(jobs)} image(s) to make "
+            f"Comparing {len(setup.picks)} unit(s) × {len(setup.runs)} run(s): {counts} "
             f"({per_run}){how} ≈ {format_usd(estimate)} (≈ {usd_neurons(estimate):,.0f} neurons). "
             "No QC retries: the report measures first images."
         ))

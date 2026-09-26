@@ -298,22 +298,38 @@ def test_an_unreadable_image_is_made_again_next_run(tmp_path, plan_data, fake_im
     assert (unit.status, unit.current_version) == ("generated", 2)
 
 
-def test_an_os_error_elsewhere_in_the_check_keeps_the_current_version(tmp_path, plan_data, fake_images, monkeypatch):
-    run = Run(tmp_path, plan_data, fake_images(), qc=QCSettings(vision=False))
+def test_an_os_error_elsewhere_in_the_check_fails_only_that_unit(tmp_path, plan_data, fake_images, monkeypatch):
+    from stickman.qc.pixel import pixel_check as real_pixel_check
+
+    run = Run(tmp_path, plan_data, fake_images(), qc=QCSettings(vision=False), concurrency=1)
     run.go(run.jobs[:1])
     unit = run.store.unit("001")
     unit.versions[0].qc = None  # it still needs its check; its file reads fine
     run.store.save()
 
-    def disk_full(image, settings):
-        raise OSError(28, "No space left on device")
+    calls = []
 
-    monkeypatch.setattr("stickman.render.calls.pixel_check", disk_full)
-    with pytest.raises(OSError, match="No space left"):
-        asyncio.run(run.make_renderer(fake_images()).run(run.jobs[:1]))
+    def flaky(image, settings):
+        calls.append(1)
+        if len(calls) == 1:  # only 001's re-check, which goes first with concurrency=1
+            raise OSError(28, "No space left on device")
+        return real_pixel_check(image, settings)
+
+    monkeypatch.setattr("stickman.render.calls.pixel_check", flaky)
+    result = asyncio.run(run.make_renderer(fake_images()).run(run.jobs))
+    assert result.stop is None  # the run finishes; the OSError doesn't abort the others
     unit = StateStore.load(run.project).unit("001")
-    assert unit.current_version == 1 and [v.v for v in unit.versions] == [1]
+    assert unit.status == "failed" and unit.current_version == 1 and [v.v for v in unit.versions] == [1]
+    assert unit.versions[0].qc is None  # stays unchecked, so the next run checks it again
+    assert unit.error.startswith("check failed: ")
     assert (run.project / "images" / "001_00-00.0.png").exists()
+    assert run.statuses()["002a"] == "generated" and run.statuses()["002b"] == "generated"
+
+    later = fake_images()
+    asyncio.run(run.make_renderer(later).run(run.jobs[:1]))
+    assert later.calls == []  # the same image is checked again, no new image made
+    unit = StateStore.load(run.project).unit("001")
+    assert unit.status == "generated" and unit.current_version == 1
 
 
 def test_reference_images_are_sent_in_slot_order_and_recorded(tmp_path, plan_data, fake_images):

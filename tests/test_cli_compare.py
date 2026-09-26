@@ -121,6 +121,15 @@ def test_the_estimate_counts_only_the_check_for_an_image_that_needs_only_a_check
     assert client.calls == [] and len(client.chat_calls) == 9
 
 
+def test_the_start_line_splits_make_and_check_only_counts_when_mixed(workspace, monkeypatch, fake_images, bootstrapped):
+    bootstrapped(workspace)
+    use_images(monkeypatch, fake_images())
+    monkeypatch.setattr(cli, "_check_only", lambda store, jobs: {jobs[0].unit_id})
+    result = compare(workspace, "--yes")
+    assert result.exit_code == 0, result.output
+    assert "Comparing 3 unit(s) × 3 run(s): 6 image(s) to make and 3 to check (" in result.output
+
+
 def test_every_run_renders_a_unit_with_the_same_seed(workspace, monkeypatch, fake_images, bootstrapped):
     bootstrapped(workspace)
     client = use_images(monkeypatch, fake_images())
