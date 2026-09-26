@@ -62,6 +62,8 @@ test:
   count: 3
 bootstrap:
   anchor_candidates: 4
+  mascot_candidates: 3
+  anchor_scene: two_figures   # two_figures | one_figure (use one_figure if the anchor's figures leak into scenes)
   model: "@cf/black-forest-labs/flux-2-klein-9b"  # dev is unusable synchronously (M0: HTTP 408 timeouts)
 export:
   fps: 30

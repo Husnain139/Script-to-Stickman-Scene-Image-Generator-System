@@ -108,3 +108,17 @@ def test_a_settings_file_that_is_not_utf8_is_a_config_error(tmp_path):
 def test_the_vision_check_is_on_by_default_and_can_be_turned_off(tmp_path):
     assert Settings().qc.vision is True
     assert load_settings(write(tmp_path / "settings.yaml", "qc:\n  vision: false\n")).qc.vision is False
+
+
+def test_bootstrap_makes_three_mascot_candidates_from_a_two_figure_anchor_by_default():
+    settings = Settings()
+    assert (settings.bootstrap.mascot_candidates, settings.bootstrap.anchor_scene) == (3, "two_figures")
+
+
+def test_the_anchor_scene_is_one_of_two(tmp_path):
+    path = tmp_path / "settings.yaml"
+    path.write_text("bootstrap:\n  anchor_scene: one_figure\n", encoding="utf-8")
+    assert load_settings(path).bootstrap.anchor_scene == "one_figure"
+    path.write_text("bootstrap:\n  anchor_scene: three\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_settings(path)
