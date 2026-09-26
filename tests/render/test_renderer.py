@@ -686,3 +686,20 @@ def test_a_blurred_image_is_softened_like_a_dark_one(tmp_path, plan_data, fake_i
     assert (v1.qc.reason, v1.qc.vision, v2.retry_reason) == ("safety_filtered", None, "safety_filtered")
     assert (unit.status, unit.current_version) == ("generated", 2)
     assert run.renderer.softened == ["001"]
+
+
+def test_a_rewrites_llm_calls_are_ledgered_under_its_unit(tmp_path, plan_data, fake_images, drawings, jpeg):
+    from stickman.cf.client import LLMResult
+
+    async def reply():
+        return LLMResult(text="{}", input_tokens=1, output_tokens=1, raw={}, neurons=2.0)
+
+    class MeteredRewriter(FakeRewriter):
+        async def soften(self, unit_id, notes, check=None):
+            await run.meter.run(reply, kind="llm", model="@cf/openai/gpt-oss-120b", estimate_usd=0.0)  # no unit given
+            return await super().soften(unit_id, notes, check)
+
+    run = Run(tmp_path, plan_data, fake_images([jpeg_of(drawings.all_black()), jpeg]), rewriter=MeteredRewriter(plan_data))
+    run.go(run.jobs[:1])
+    entries = [json.loads(line) for line in (tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [(e["kind"], e["unit"]) for e in entries if e["kind"] == "llm"] == [("llm", "001")]

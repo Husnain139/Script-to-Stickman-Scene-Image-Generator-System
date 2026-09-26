@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Generic, Protocol, TypeVar
@@ -36,6 +38,21 @@ def billing_of(exc: CFError) -> Billing:
     """A timeout, or a 2xx answer that can't be read, may have been billed; an error response wasn't
     (spec §5.4, §9.5)."""
     return "possibly_billed" if exc.possibly_billed else "not_billed"
+
+
+_UNIT: ContextVar[str | None] = ContextVar("stickman_unit", default=None)
+
+
+@contextmanager
+def unit_scope(unit: str) -> Iterator[None]:
+    """Ledger entries of calls made inside name `unit` when the call names none itself: a soften's or
+    redesign's planner calls, which go through StageRunner (spec §5.4). Each asyncio task has its own
+    scope, so units rendered at the same time don't mix."""
+    token = _UNIT.set(unit)
+    try:
+        yield
+    finally:
+        _UNIT.reset(token)
 
 
 @dataclass(frozen=True)
@@ -84,6 +101,8 @@ class Meter:
         cost_of: Callable[[R], float | None] | None = None,
     ) -> Metered[R]:
         """Make one API call. With a budget, BudgetExceeded is raised before the call when it says no."""
+        if unit is None:
+            unit = _UNIT.get()
         token = self._budget.reserve(estimate_usd) if self._budget is not None else None
         started = self._clock()
         try:
