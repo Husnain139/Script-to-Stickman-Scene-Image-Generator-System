@@ -11,8 +11,8 @@ from stickman.bootstrap.store import BootstrapError, BootstrapStore, bootstrap_f
 from stickman.config_files import MascotConfig, StyleConfig
 from stickman.plan.models import PlanValidationError
 from stickman.plan.store import PlanChangedError, load_plan, update_unit, write_plan
-from stickman.render.lock import LockHeld, ProjectLock
 from stickman.render.state import StateStore
+from stickman.review.access import Busy, ProjectAccess
 from stickman.settings import ConfigError, Settings
 
 PLAN_CHANGED = "plan.yaml changed on disk since this page loaded — reload before saving"
@@ -100,27 +100,28 @@ def edit_prompt(plan_path: Path, unit_id: str, prompt: str, plan_hash: str, *, l
 
 
 def approve_sheet(
-    workspace: Path, char_id: str, n: int, *, settings: Settings, style: StyleConfig, mascot: MascotConfig
+    workspace: Path, char_id: str, n: int, *, settings: Settings, style: StyleConfig, mascot: MascotConfig,
+    access: ProjectAccess,
 ) -> list[str]:
-    """The anchor or the mascot sheet (spec §8.1), under bootstrap's lock. Extras' sheets come in M7."""
+    """The anchor or the mascot sheet (spec §8.1), under bootstrap's lock, taken through `access`. Refused
+    while the page makes candidates: that job's store would save over the approval. Extras' sheets come in M7."""
     if char_id not in ("anchor", "mascot"):
         raise ActionError(400, EXTRAS_LATER)
+    job = access.job
+    if job is not None and job.kind == "candidates":
+        raise ActionError(409, f"the page is making {job.unit} candidates; wait for it to finish")
     folder = bootstrap_folder(workspace, style.style_version)
     folder.mkdir(parents=True, exist_ok=True)
-    lock = ProjectLock(folder)
     try:
-        lock.acquire()
-    except LockHeld as exc:
-        raise ActionError(409, f"{exc}; try again when it finishes.") from None
-    try:
-        store = BootstrapStore.load(workspace, style.style_version)
-        max_side = settings.image.ref_max_side
-        if char_id == "anchor":
-            written = approve_anchor(store, n, ref_max_side=max_side)
-        else:
-            written = approve_mascot(store, n, mascot=mascot, ref_max_side=max_side)
+        with access.locked(folder):
+            store = BootstrapStore.load(workspace, style.style_version)
+            max_side = settings.image.ref_max_side
+            if char_id == "anchor":
+                written = approve_anchor(store, n, ref_max_side=max_side)
+            else:
+                written = approve_mascot(store, n, mascot=mascot, ref_max_side=max_side)
+    except Busy as exc:
+        raise ActionError(409, f"{exc}.") from None
     except (ApprovalError, BootstrapError, ConfigError) as exc:
         raise ActionError(409, str(exc)) from None
-    finally:
-        lock.release()
     return [store.relative(path) for path in written]

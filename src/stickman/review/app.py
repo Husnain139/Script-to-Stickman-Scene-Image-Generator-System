@@ -258,7 +258,8 @@ def create_app(
             style, mascot = load_style(workspace), load_mascot(workspace)
         except ConfigError as exc:
             raise ActionError(409, str(exc)) from None
-        approve_sheet(workspace, char_id, body.candidate, settings=settings, style=style, mascot=mascot)
+        approve_sheet(workspace, char_id, body.candidate, settings=settings, style=style, mascot=mascot,
+                      access=access)
         return changed()
 
     @app.post("/api/sheets/{char_id}/regenerate", status_code=202)

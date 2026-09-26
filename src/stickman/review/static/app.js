@@ -245,17 +245,19 @@ function unitTags(unit) {
 function sheetsView(data) {
   const boot = data.bootstrap;
   if (!boot) return h("p", { class: "empty" }, "Bootstrap's candidates can't be read; see the problem above.");
+  // While candidates are being made, their job's store would save over an approval: wait for it.
+  const making = Boolean(data.job && data.job.kind === "candidates");
   return h("div", { class: "sheets" },
     stepSection("anchor", "Style anchor", boot.anchor, boot.anchor_done,
-      "Every image takes its line weight and look from the anchor. Approve one, then make the mascot sheet."),
+      "Every image takes its line weight and look from the anchor. Approve one, then make the mascot sheet.", making),
     stepSection("mascot", "Mascot sheet", boot.mascot, boot.mascot_done,
-      "The main character's head and hair, sent with every scene he's in."),
+      "The main character's head and hair, sent with every scene he's in.", making),
     h("section", { class: "panel" }, h("h2", {}, "Extras"),
       h("p", { class: "muted" }, "Extras are drawn from their description until their sheets arrive (M7)."),
       h("ul", {}, data.cast.filter((m) => m.id !== "mascot").map((m) => h("li", {}, h("strong", {}, m.name), `: ${m.description}`)))));
 }
 
-function stepSection(step, title, state, done, blurb) {
+function stepSection(step, title, state, done, blurb, making) {
   const cards = state.candidates.map((c) => h("figure", { class: `candidate${c.approved ? " approved" : ""}` },
     h("div", { class: "paper" }, h("img", { src: c.url, alt: `${title} candidate ${c.n}`, loading: "lazy" })),
     h("figcaption", {}, h("strong", {}, `c${c.n} `), verdict(c.qc),
@@ -263,7 +265,7 @@ function stepSection(step, title, state, done, blurb) {
     c.approved
       ? h("span", { class: "tag ok" }, "Approved")
       : h("button", {
-          type: "button", disabled: c.previous_anchor,
+          type: "button", disabled: c.previous_anchor || making,
           onclick: () => act("POST", `/api/sheets/${step}/approve`, { candidate: c.n }, `Approved ${title.toLowerCase()} c${c.n}.`),
         }, "Approve")));
   return h("section", { class: "panel" },
@@ -271,7 +273,7 @@ function stepSection(step, title, state, done, blurb) {
     h("p", { class: "muted" }, blurb),
     cards.length ? h("div", { class: "candidates" }, cards) : h("p", { class: "empty" }, "No candidates yet."),
     h("button", {
-      type: "button", title: "Spends neurons: two images and their checks",
+      type: "button", title: "Spends neurons: two images and their checks", disabled: making,
       onclick: () => act("POST", `/api/sheets/${step}/regenerate`),
     }, "Make 2 more"));
 }

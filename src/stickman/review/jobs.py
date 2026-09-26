@@ -28,13 +28,12 @@ from stickman.plan.store import PlanChangedError, load_plan, update_unit, write_
 from stickman.pricing import load_pricing
 from stickman.render.calls import Calls
 from stickman.render.jobs import JobBuilder, JobError, RenderContext
-from stickman.render.lock import LockHeld, ProjectLock
 from stickman.render.recovery import recover
 from stickman.render.references import ReferenceFiles
 from stickman.render.renderer import GuardedChat, Renderer, RunControl
 from stickman.render.rewrite import PlanRewriter
 from stickman.render.summary import PAUSE_NAMES
-from stickman.review.access import JobInfo, ProjectAccess
+from stickman.review.access import Busy, JobInfo, ProjectAccess
 from stickman.review.events import EventHub
 from stickman.runlog import RunLog, mask
 from stickman.settings import ConfigError, Settings
@@ -225,11 +224,10 @@ class Jobs:
             return mismatch, "failed"
         folder = bootstrap_folder(self._workspace, style.style_version)
         folder.mkdir(parents=True, exist_ok=True)
-        lock = ProjectLock(folder)
         try:
-            lock.acquire()
-        except LockHeld as exc:
-            return f"{exc}; try again when it finishes.", "failed"
+            self._access.hold(folder)
+        except Busy as exc:
+            return f"{exc}.", "failed"
         try:
             store = BootstrapStore.load(self._workspace, style.style_version)
             store.recover()
@@ -246,7 +244,7 @@ class Jobs:
                                        on_done=lambda: self._publish(info, "progress") if info else None)
                 result = await maker.run(plan, jobs)
         finally:
-            lock.release()
+            self._access.drop(folder)
         if result.stop is not None:
             return f"Stopped ({PAUSE_NAMES[result.stop]}). Finished candidates are kept.", "paused"
         errors = "; ".join(f"{label}: {error}" for label, error in maker.errors.items())

@@ -5,8 +5,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from stickman.bootstrap.store import BootstrapStore
+from PIL import Image
+
+from stickman.bootstrap.store import BootstrapStore, Candidate
 from stickman.cf.errors import CFError, ErrorCategory
+from stickman.config_files import load_mascot, load_style
 from stickman.plan.models import parse_plan
 from stickman.plan.store import load_plan, to_document, write_plan
 from stickman.qc.decide import decide
@@ -15,6 +18,7 @@ from stickman.render.images import encode_png
 from stickman.render.jobs import JobBuilder, RenderContext
 from stickman.render.state import StateStore, Version
 from stickman.review.access import Busy, ProjectAccess
+from stickman.review.actions import ActionError, approve_sheet
 from stickman.review.events import EventHub
 from stickman.review.jobs import Jobs
 from stickman.settings import ConfigError, QCSettings, Settings
@@ -192,3 +196,69 @@ def test_page_actions_use_the_jobs_store_while_it_runs(tmp_path, plan_data, draw
 
     asyncio.run(go())
     assert StateStore.load(page.project).state.plan_approved  # not lost when the job saved after it
+
+
+def test_the_server_never_takes_a_lock_it_already_holds(tmp_path):
+    access = ProjectAccess(tmp_path)
+    folder = tmp_path / "library" / "_bootstrap" / "v1"
+    folder.mkdir(parents=True)
+    access.hold(folder)
+    with pytest.raises(Busy):  # ProjectLock alone would call its own PID's lock stale and take it
+        access.hold(folder)
+    with pytest.raises(Busy):
+        with access.locked(folder):
+            pass
+    assert (folder / ".lock").read_text(encoding="ascii") == str(os.getpid())
+    access.drop(folder)
+    assert not (folder / ".lock").exists()
+    with access.locked(folder):
+        assert (folder / ".lock").exists()
+    assert not (folder / ".lock").exists()
+
+
+def anchor_candidate(workspace):
+    store = BootstrapStore.load(workspace, 1)
+    record = Candidate(n=1, file="library/_bootstrap/v1/anchor/c1.png", seed=5,
+                       model="@cf/black-forest-labs/flux-2-klein-9b", width=1024, height=768, prompt_sent="p",
+                       est_cost_usd=0.015, latency_s=3.0, created=datetime(2026, 9, 26, 10, 0, tzinfo=PK))
+    path = workspace / record.file
+    path.parent.mkdir(parents=True)
+    path.write_bytes(encode_png(Image.new("RGB", (1024, 768), "white"), record.model_dump(mode="json")))
+    store.add("anchor", record)
+
+
+def test_approving_a_sheet_while_its_candidates_are_made_is_refused_and_keeps_bootstraps_lock(
+    tmp_path, plan_data, drawings, fake_images, jpeg
+):
+    gate = asyncio.Event()
+
+    async def slow(call):
+        await gate.wait()
+        return jpeg
+
+    page = Page(tmp_path, plan_data, drawings, fake_images(lambda call: slow(call)))
+    anchor_candidate(tmp_path)
+    lock = tmp_path / "library" / "_bootstrap" / "v1" / ".lock"
+    kwargs = dict(settings=Settings(), style=load_style(tmp_path), mascot=load_mascot(tmp_path), access=page.access)
+
+    async def go():
+        page.jobs.more_candidates("anchor")
+        for _ in range(200):  # until the job holds bootstrap's lock and waits for its images
+            if page.client.calls:
+                break
+            await asyncio.sleep(0)
+        assert lock.exists()
+        with pytest.raises(ActionError) as error:
+            approve_sheet(tmp_path, "anchor", 1, **kwargs)
+        assert error.value.status == 409
+        assert error.value.message == "the page is making anchor candidates; wait for it to finish"
+        assert lock.exists()  # still the job's
+        gate.set()
+        await page.jobs.wait()
+
+    asyncio.run(go())
+    assert not lock.exists()
+    assert BootstrapStore.load(tmp_path, 1).state.anchor.approved is None
+    approve_sheet(tmp_path, "anchor", 1, **kwargs)
+    store = BootstrapStore.load(tmp_path, 1)
+    assert store.state.anchor.approved == 1 and [c.n for c in store.state.anchor.candidates] == [1, 2, 3]

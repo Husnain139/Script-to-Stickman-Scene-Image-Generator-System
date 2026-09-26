@@ -9,6 +9,7 @@ from stickman.plan.models import parse_plan
 from stickman.plan.store import load_plan, to_document, write_plan
 from stickman.render.images import encode_png
 from stickman.render.state import StateStore, Version
+from stickman.review.access import ProjectAccess
 from stickman.review.actions import (
     PLAN_CHANGED,
     ActionError,
@@ -135,13 +136,14 @@ def test_approving_an_anchor_candidate_from_the_page(tmp_path):
     path.parent.mkdir(parents=True)
     path.write_bytes(encode_png(Image.new("RGB", (1024, 768), "white"), record.model_dump(mode="json")))
     store.add("anchor", record)
-    written = approve_sheet(tmp_path, "anchor", 1, settings=Settings(), style=load_style(tmp_path), mascot=load_mascot(tmp_path))
+    written = approve_sheet(tmp_path, "anchor", 1, settings=Settings(), style=load_style(tmp_path),
+                            mascot=load_mascot(tmp_path), access=ProjectAccess(tmp_path))
     assert written == ["library/style/anchor_v1.png", "library/style/anchor_v1_ref.png"]
     assert not (tmp_path / "library" / "_bootstrap" / "v1" / ".lock").exists()
 
 
 def test_extras_sheets_come_later_and_unknown_candidates_are_refused(tmp_path):
-    kwargs = dict(settings=Settings(), style=load_style(tmp_path), mascot=load_mascot(tmp_path))
+    kwargs = dict(settings=Settings(), style=load_style(tmp_path), mascot=load_mascot(tmp_path), access=ProjectAccess(tmp_path))
     with pytest.raises(ActionError) as error:
         approve_sheet(tmp_path, "caveman_group", 1, **kwargs)
     assert status_of(error) == 400 and "M7" in error.value.message

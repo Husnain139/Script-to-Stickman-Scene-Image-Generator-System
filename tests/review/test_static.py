@@ -73,3 +73,10 @@ def test_the_page_needs_no_inline_script_or_style_attribute_under_its_content_se
     assert not re.search(r"""["']?style["']?\s*:""", SCRIPT)  # h(tag, {style: ...}) would set a blocked attribute
     assert 'setAttribute("style"' not in SCRIPT
     assert ".style.flexGrow = " in SCRIPT  # the timeline's widths go through the CSSOM, which CSP allows
+
+
+def test_sheet_buttons_wait_while_the_page_makes_candidates():
+    sheets = SCRIPT[SCRIPT.index("function sheetsView"):SCRIPT.index("// --- Tests and Gallery ---")]
+    assert 'data.job.kind === "candidates"' in sheets
+    assert "disabled: c.previous_anchor || making" in sheets  # Approve
+    assert '"Spends neurons: two images and their checks", disabled: making' in sheets  # Make 2 more
