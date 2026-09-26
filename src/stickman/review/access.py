@@ -19,6 +19,7 @@ from stickman.render.lock import LOCK_FILE, LockHeld, ProjectLock
 from stickman.render.state import ProjectState, StateStore
 
 VERBS = {"regenerate": "regenerating", "replan": "replanning", "candidates": "making candidates for"}
+NOUNS = {"regenerate": "regeneration of {}", "replan": "replan of {}", "candidates": "{} candidates"}
 
 
 class Busy(Exception):
@@ -33,6 +34,10 @@ class JobInfo:
 
     def describe(self) -> str:
         return f"{VERBS[self.kind]} {self.unit}" if self.unit else VERBS[self.kind]
+
+    def noun(self) -> str:
+        """The job as a noun, like "regeneration of 006a" or "anchor candidates"."""
+        return NOUNS[self.kind].format(self.unit or "").strip()
 
     def as_dict(self) -> dict[str, Any]:
         return {"kind": self.kind, "unit": self.unit, "message": self.message}

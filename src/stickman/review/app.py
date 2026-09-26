@@ -5,6 +5,7 @@ and every change must carry X-Stickman: 1, which another site's page can't send,
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -173,6 +174,9 @@ def create_app(
             stop.set()
             if task is not None:
                 await asyncio.gather(task, return_exceptions=True)
+            if access.job is not None:
+                print(f"Waiting for the page's {access.job.noun()} to finish (Ctrl+C again to abandon it)",
+                      file=sys.stderr, flush=True)
             await jobs.wait()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)

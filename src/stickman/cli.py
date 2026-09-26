@@ -8,6 +8,7 @@ import math
 import shutil
 import socket
 import sys
+import threading
 import webbrowser
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta
@@ -756,14 +757,27 @@ def _port_free(host: str, port: int) -> bool:
     return True
 
 
+# The page always holds an event stream open, and uvicorn would wait for it forever on Ctrl+C: open
+# connections get two seconds, then they're closed.
+SERVE_OPTIONS = {"log_level": "warning", "timeout_graceful_shutdown": 2}
+BROWSER_DELAY_S = 0.8  # the server is listening by then; opening sooner can show "connection refused"
+
+
 def _open_browser(url: str) -> None:
     webbrowser.open(url)
+
+
+def _open_when_listening(url: str) -> threading.Timer:
+    timer = threading.Timer(BROWSER_DELAY_S, _open_browser, args=(url,))
+    timer.daemon = True
+    timer.start()
+    return timer
 
 
 def _serve(site: object, host: str, port: int) -> None:
     import uvicorn
 
-    uvicorn.run(site, host=host, port=port, log_level="warning")
+    uvicorn.run(site, host=host, port=port, **SERVE_OPTIONS)  # type: ignore[arg-type]
 
 
 @app.command()
@@ -780,6 +794,12 @@ def review(
         console.print("Project: (none found)")
         _fail(str(exc), EXIT_USER_ERROR)
     console.print(f"Project: {escape(directory.name)}")
+    if not directory.is_relative_to(root):
+        _fail(
+            f"{directory} is outside the workspace {root}. The review page serves only projects inside its "
+            "workspace: run `stickman review` with -w set to the project's workspace.",
+            EXIT_USER_ERROR,
+        )
     try:
         cfg = load_config(root)
     except ConfigError:
@@ -803,12 +823,14 @@ def review(
     site = create_app(root, directory, cfg.settings, client_factory=lambda: build_client(cfg), secrets=_secrets(cfg))
     url = f"http://{host}:{port}/"
     console.print(escape(f"Review page: {url} (Ctrl+C stops it)"))
-    if not no_browser:
-        _open_browser(url)
+    opener = None if no_browser else _open_when_listening(url)
     try:
         _serve(site, host, port)
     except KeyboardInterrupt:
         pass
+    finally:
+        if opener is not None:
+            opener.cancel()  # the server stopped before the browser opened: there's no page to show
     console.print("Review page stopped.")
 
 

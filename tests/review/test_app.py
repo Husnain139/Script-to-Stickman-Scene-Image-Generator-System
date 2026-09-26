@@ -221,3 +221,19 @@ def test_every_response_forbids_framing_and_sniffing(site, url):
     response = site.get(url)
     for name, value in SECURITY_HEADERS.items():
         assert response.headers.get(name) == value, (url, name)
+
+
+def test_stopping_the_server_during_a_job_says_what_it_waits_for(tmp_path, plan_data, fake_images, jpeg, capsys):
+    import asyncio
+
+    project = tmp_path / "projects" / FOLDER
+    project.mkdir(parents=True)
+    write_plan(project / "plan.yaml", to_document(parse_plan(plan_data)), expected_hash=None)
+    images = fake_images(lambda call: asyncio.sleep(0.3, result=jpeg))
+    app = create_app(tmp_path, project, Settings(), client_factory=lambda: images, watch=False,
+                     allowed_hosts={"testserver"})
+    with TestClient(app) as client:
+        assert client.post("/api/units/001/regenerate", headers=WRITE).status_code == 202
+    err = capsys.readouterr().err
+    assert "Waiting for the page's regeneration of 001 to finish (Ctrl+C again to abandon it)" in err
+    assert StateStore.load(project).unit("001").versions  # the job finished before the server stopped
